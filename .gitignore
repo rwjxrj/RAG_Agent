@@ -1,0 +1,29 @@
+.env
+.env.*
+!.env.example
+
+.idea/
+.history
+# Company/proprietary knowledge base - do not commit
+source/*.json
+!source/sample_docs.json
+source/*.sql
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Debug/test output
+app/services/hn.html
+artifacts/
+scripts/e.html
+
+# Local offline evaluation exports may contain customer or ticket data
+tests/fixtures/offline_eval_replay_cases_golden.jsonl
