@@ -2,6 +2,87 @@ import { useEffect, useState } from 'react'
 import { admin, type ArchiConfig, type LLMConfig } from '../api/client'
 import { Loader2, Cpu, Key, Link2, Save, RefreshCw, CheckCircle2, AlertCircle, Sparkles, FileText, Globe } from 'lucide-react'
 
+type LlmProviderPresetKey =
+  | 'custom'
+  | 'deepseek'
+  | 'dashscope_qwen'
+  | 'zhipu_glm'
+  | 'moonshot_kimi'
+  | 'siliconflow'
+
+const LLM_PROVIDER_PRESETS: Record<
+  LlmProviderPresetKey,
+  {
+    label: string
+    baseUrl: string
+    primaryModel: string
+    fallbackModel: string
+    economyModel: string
+    description: string
+  }
+> = {
+  custom: {
+    label: '自定义 / 手动填写',
+    baseUrl: '',
+    primaryModel: '',
+    fallbackModel: '',
+    economyModel: '',
+    description: '适用于任意 OpenAI-compatible 服务，手动填写模型名和 Base URL。',
+  },
+  deepseek: {
+    label: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    primaryModel: 'deepseek-chat',
+    fallbackModel: 'deepseek-chat',
+    economyModel: 'deepseek-chat',
+    description: 'DeepSeek 官方 OpenAI-compatible 接口。',
+  },
+  dashscope_qwen: {
+    label: '阿里云百炼 / Qwen',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    primaryModel: 'qwen-plus',
+    fallbackModel: 'qwen-turbo',
+    economyModel: 'qwen-turbo',
+    description: '阿里云百炼北京地域 OpenAI 兼容模式；其他地域请手动调整 Base URL。',
+  },
+  zhipu_glm: {
+    label: '智谱 GLM',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    primaryModel: 'glm-4-plus',
+    fallbackModel: 'glm-4-flash',
+    economyModel: 'glm-4-flash',
+    description: '智谱 AI 开放平台 OpenAI 兼容接口。',
+  },
+  moonshot_kimi: {
+    label: '月之暗面 / Kimi',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    primaryModel: 'kimi-k2.5',
+    fallbackModel: 'moonshot-v1-32k',
+    economyModel: 'moonshot-v1-8k',
+    description: 'Kimi API 开放平台 OpenAI-compatible 接口。',
+  },
+  siliconflow: {
+    label: '硅基流动 SiliconFlow',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    primaryModel: 'deepseek-ai/DeepSeek-V3',
+    fallbackModel: 'Qwen/Qwen2.5-7B-Instruct',
+    economyModel: 'Qwen/Qwen2.5-7B-Instruct',
+    description: '硅基流动模型名需使用模型广场中的完整名称。',
+  },
+}
+
+function detectLlmProviderPreset(baseUrl: string, model: string): LlmProviderPresetKey {
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '')
+  const normalizedModel = model.trim()
+  const found = (Object.entries(LLM_PROVIDER_PRESETS) as Array<[LlmProviderPresetKey, (typeof LLM_PROVIDER_PRESETS)[LlmProviderPresetKey]]>)
+    .find(([key, preset]) =>
+      key !== 'custom' &&
+      preset.baseUrl.replace(/\/+$/, '') === normalizedBaseUrl &&
+      (!normalizedModel || preset.primaryModel === normalizedModel)
+    )
+  return found?.[0] ?? 'custom'
+}
+
 export default function Settings() {
   const [, setConfig] = useState<LLMConfig | null>(null)
   const [, setArchiConfig] = useState<ArchiConfig | null>(null)
@@ -17,6 +98,7 @@ export default function Settings() {
   const [llmFallbackModel, setLlmFallbackModel] = useState('')
   const [llmApiKey, setLlmApiKey] = useState('')
   const [llmBaseUrl, setLlmBaseUrl] = useState('')
+  const [llmProviderPreset, setLlmProviderPreset] = useState<LlmProviderPresetKey>('custom')
 
   const [languageDetect, setLanguageDetect] = useState(true)
   const [decisionRouterLlm, setDecisionRouterLlm] = useState(false)
@@ -45,6 +127,7 @@ export default function Settings() {
         setLlmFallbackModel(llmData.llm_fallback_model)
         setLlmApiKey(llmData.llm_api_key)
         setLlmBaseUrl(llmData.llm_base_url)
+        setLlmProviderPreset(detectLlmProviderPreset(llmData.llm_base_url, llmData.llm_model))
         setArchiConfig(archiData)
         setLanguageDetect(archiData.language_detect_enabled)
         setDecisionRouterLlm(archiData.decision_router_use_llm)
@@ -77,9 +160,14 @@ export default function Settings() {
         llm_api_key: llmApiKey,
         llm_base_url: llmBaseUrl.trim(),
       })
+      await admin.updateArchiConfig({
+        llm_model_economy: llmModelEconomy.trim(),
+        llm_task_aware_routing_enabled: llmTaskAwareRouting,
+      })
       setSuccess('配置已保存，缓存已刷新。')
       const data = await admin.getLLMConfig()
       setConfig(data)
+      setLlmProviderPreset(detectLlmProviderPreset(data.llm_base_url, data.llm_model))
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败')
     } finally {
@@ -103,6 +191,7 @@ export default function Settings() {
       setLlmFallbackModel(llmData.llm_fallback_model)
       setLlmApiKey(llmData.llm_api_key)
       setLlmBaseUrl(llmData.llm_base_url)
+      setLlmProviderPreset(detectLlmProviderPreset(llmData.llm_base_url, llmData.llm_model))
       setArchiConfig(archiData)
       setLanguageDetect(archiData.language_detect_enabled)
       setDecisionRouterLlm(archiData.decision_router_use_llm)
@@ -189,6 +278,16 @@ export default function Settings() {
     }
   }
 
+  const handleProviderPresetChange = (value: LlmProviderPresetKey) => {
+    setLlmProviderPreset(value)
+    const preset = LLM_PROVIDER_PRESETS[value]
+    if (value === 'custom') return
+    setLlmModel(preset.primaryModel)
+    setLlmFallbackModel(preset.fallbackModel)
+    setLlmBaseUrl(preset.baseUrl)
+    setLlmModelEconomy(preset.economyModel)
+  }
+
   const handleAutoGenerate = async () => {
     if (!autoGenUrl.trim()) return
     setError(null)
@@ -270,15 +369,35 @@ export default function Settings() {
           LLM 配置
         </h2>
         <p className="text-sm text-zinc-400 mb-5">
-          配置模型名称、API key（Token）和 Base URL。URL 为空时使用 OpenAI 默认地址，数据库配置会覆盖环境变量。
+          配置模型名称、API key（Token）和 Base URL。可选择中国模型预设，也可手动填写任意 OpenAI-compatible 服务。
         </p>
         <form onSubmit={handleSave} className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 mb-1.5">模型供应商预设</label>
+            <select
+              value={llmProviderPreset}
+              onChange={(e) => handleProviderPresetChange(e.target.value as LlmProviderPresetKey)}
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
+              disabled={saving}
+            >
+              {(Object.entries(LLM_PROVIDER_PRESETS) as Array<[LlmProviderPresetKey, (typeof LLM_PROVIDER_PRESETS)[LlmProviderPresetKey]]>)
+                .map(([key, preset]) => (
+                  <option key={key} value={key}>
+                    {preset.label}
+                  </option>
+                ))}
+            </select>
+            <p className="text-xs text-zinc-500 mt-1">{LLM_PROVIDER_PRESETS[llmProviderPreset].description}</p>
+          </div>
           <div>
             <label className="block text-xs font-medium text-zinc-500 mb-1.5">主模型</label>
             <input
               type="text"
               value={llmModel}
-              onChange={(e) => setLlmModel(e.target.value)}
+              onChange={(e) => {
+                setLlmModel(e.target.value)
+                setLlmProviderPreset('custom')
+              }}
               placeholder="gpt-4o-mini"
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               disabled={saving}
@@ -289,7 +408,10 @@ export default function Settings() {
             <input
               type="text"
               value={llmFallbackModel}
-              onChange={(e) => setLlmFallbackModel(e.target.value)}
+              onChange={(e) => {
+                setLlmFallbackModel(e.target.value)
+                setLlmProviderPreset('custom')
+              }}
               placeholder="gpt-3.5-turbo"
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               disabled={saving}
@@ -319,12 +441,15 @@ export default function Settings() {
             <input
               type="url"
               value={llmBaseUrl}
-              onChange={(e) => setLlmBaseUrl(e.target.value)}
+              onChange={(e) => {
+                setLlmBaseUrl(e.target.value)
+                setLlmProviderPreset('custom')
+              }}
               placeholder="https://api.openai.com/v1（留空 = 默认）"
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
               disabled={saving}
             />
-            <p className="text-xs text-zinc-500 mt-1">留空则使用 OpenAI 默认地址。</p>
+            <p className="text-xs text-zinc-500 mt-1">留空则使用 OpenAI 默认地址；中国模型一般需要填写对应厂商的兼容接口地址。</p>
           </div>
           <button
             type="submit"

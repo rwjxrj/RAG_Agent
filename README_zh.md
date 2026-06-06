@@ -419,6 +419,22 @@ curl -X POST http://localhost:8000/v1/admin/ingest \
 
 ## 配置
 
+### 选择中国模型
+
+本项目的 LLM 网关使用 OpenAI-compatible Chat Completions 接口。进入前端 **Settings → LLM 配置** 后，可以在“模型供应商预设”中选择 DeepSeek、阿里云百炼/Qwen、智谱 GLM、月之暗面/Kimi 或硅基流动。选择预设会自动填入主模型、备用模型、经济模型和 Base URL；你仍然可以手动修改模型名，以适配厂商最新模型或私有中转服务。
+
+运行时优先使用数据库中的 Settings 配置；当数据库配置为空时，才回退到 `.env` / `.env.example` 中的 `LLM_MODEL`、`LLM_FALLBACK_MODEL`、`LLM_MODEL_ECONOMY`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`。
+
+常用 OpenAI-compatible Base URL：
+
+| 供应商 | Base URL | 示例模型 |
+|--------|----------|----------|
+| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
+| 阿里云百炼/Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus`、`qwen-turbo` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus`、`glm-4-flash` |
+| 月之暗面/Kimi | `https://api.moonshot.cn/v1` | `kimi-k2.5`、`moonshot-v1-32k` |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | 使用模型广场中的完整模型名 |
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgresql+asyncpg://...` | PostgreSQL（异步） |

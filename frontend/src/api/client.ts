@@ -9,9 +9,7 @@ const API_BASE =
 // Fallback for API key auth (external integrations). When logged in, Bearer token is used.
 const API_KEY = import.meta.env.VITE_API_KEY || import.meta.env.VITE_ADMIN_API_KEY || ''
 
-const DEFAULT_HEADERS: Record<string, string> = {
-  'Content-Type': 'application/json',
-}
+const DEFAULT_HEADERS: Record<string, string> = {}
 if (API_KEY) {
   DEFAULT_HEADERS['X-API-Key'] = API_KEY
   DEFAULT_HEADERS['X-Admin-API-Key'] = API_KEY
