@@ -72,9 +72,14 @@ class Settings(BaseSettings):
     qdrant_api_key: str = Field(default="", description="Qdrant API key (optional)")
 
     # Embeddings
-    embedding_provider: Literal["openai", "custom"] = Field(default="openai")
+    embedding_provider: Literal["openai", "custom", "ollama"] = Field(default="openai")
     embedding_model: str = Field(default="text-embedding-3-small", description="OpenAI embedding model")
     embedding_dimensions: int = Field(default=1536, description="Embedding dimensions")
+    embedding_api_key: str = Field(default="", description="Embedding API key; empty falls back to LLM/OpenAI key")
+    embedding_base_url: str = Field(
+        default="",
+        description="Embedding API base URL; empty falls back to LLM/OpenAI base URL or Ollama default",
+    )
     openai_api_key: str = Field(default="", description="OpenAI API key")
     openai_base_url: str = Field(default="", description="OpenAI-compatible API base URL (empty = default)")
 

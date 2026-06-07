@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { documents, admin, type Document, type DocType } from '../api/client'
+import { documents, admin, docTypeLabel, type Document, type DocType } from '../api/client'
 import {
   Plus,
   Trash2,
@@ -416,8 +416,8 @@ export default function DocumentList() {
                         </div>
                       </td>
                       <td className="px-5 py-4 align-top">
-                        <span className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium capitalize ${DOC_TYPE_COLORS[d.doc_type] || DOC_TYPE_COLORS.other}`}>
-                          {d.doc_type}
+                        <span className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium ${DOC_TYPE_COLORS[d.doc_type] || DOC_TYPE_COLORS.other}`}>
+                          {docTypeLabel(d.doc_type)}
                         </span>
                       </td>
                       <td className="px-5 py-4 align-top">
@@ -427,9 +427,9 @@ export default function DocumentList() {
                         </span>
                       </td>
                       <td className="px-5 py-4 align-top text-zinc-400">
-                        <div>{new Date(d.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+                        <div>{new Date(d.updated_at).toLocaleDateString('zh-CN')}</div>
                         <div className="mt-1 text-xs text-zinc-600">
-                          {new Date(d.updated_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                          {new Date(d.updated_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
                         </div>
                       </td>
                       <td className="px-5 py-4 align-top">

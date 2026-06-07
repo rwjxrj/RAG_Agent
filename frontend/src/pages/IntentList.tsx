@@ -64,7 +64,7 @@ export default function IntentList() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">意图缓存</h1>
           <p className="text-sm text-zinc-500 mt-1.5">
-            为常见问题预设即时回答（例如 who am i、what can you do、hello 等）。
+            为常见问题预设即时回答（例如“你是谁”“你能做什么”“你好”等）。
           </p>
         </div>
         <button
@@ -295,7 +295,7 @@ function IntentCreateModal({ onClose, onCreated }: { onClose: () => void; onCrea
         <form onSubmit={handleSubmit} className="space-y-4">
           {err && <div className="text-red-400 text-sm">{err}</div>}
           <div>
-            <label className="block text-xs text-zinc-500 mb-1">Key（唯一 ID）</label>
+            <label className="block text-xs text-zinc-500 mb-1">标识（唯一 ID）</label>
             <input
               value={key}
               onChange={(e) => setKey(e.target.value)}
@@ -309,7 +309,7 @@ function IntentCreateModal({ onClose, onCreated }: { onClose: () => void; onCrea
             <textarea
               value={patterns}
               onChange={(e) => setPatterns(e.target.value)}
-              placeholder={"\\b(who are you|what are you)\\b"}
+              placeholder={"\\b(你是谁|你能做什么|你好)\\b"}
               rows={3}
               className="w-full px-3 py-2 rounded-lg input-glass text-sm font-mono"
               required
@@ -320,7 +320,7 @@ function IntentCreateModal({ onClose, onCreated }: { onClose: () => void; onCrea
             <textarea
               value={answer}
               onChange={(e) => setAnswer(e.target.value)}
-              placeholder="我是支持助手..."
+              placeholder="我是客服助手，可以根据知识库回答产品、价格、政策和操作问题。"
               rows={4}
               className="w-full px-3 py-2 rounded-lg input-glass text-sm"
               required

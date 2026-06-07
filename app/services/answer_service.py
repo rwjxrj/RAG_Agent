@@ -110,7 +110,7 @@ class AnswerService:
             canned = (query_spec.canned_response or "").strip()
             if not canned:
                 app_name = (self._settings.app_name or "").strip()
-                canned = f"Hello! Welcome to {app_name} support. How can I help you today?" if app_name else "Hello! How can I help you today?"
+                canned = f"你好，欢迎使用 {app_name} 客服。有什么可以帮你？" if app_name else "你好，有什么可以帮你？"
             return AnswerOutput(
                 decision="PASS",
                 answer=canned,

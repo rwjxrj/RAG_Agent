@@ -297,6 +297,26 @@ class LLMConfigUpdateRequest(BaseModel):
     llm_base_url: str | None = None
 
 
+class EmbeddingConfigResponse(BaseModel):
+    """Embedding config - from DB with env fallback."""
+
+    embedding_provider: Literal["openai", "custom", "ollama"]
+    embedding_model: str
+    embedding_dimensions: int
+    embedding_api_key: str
+    embedding_base_url: str
+
+
+class EmbeddingConfigUpdateRequest(BaseModel):
+    """Partial update for embedding config."""
+
+    embedding_provider: Literal["openai", "custom", "ollama"] | None = None
+    embedding_model: str | None = None
+    embedding_dimensions: int | None = Field(default=None, gt=0)
+    embedding_api_key: str | None = None
+    embedding_base_url: str | None = None
+
+
 class ArchiConfigResponse(BaseModel):
     """Archi v3 feature flags - from DB with env fallback."""
 

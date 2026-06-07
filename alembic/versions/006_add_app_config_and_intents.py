@@ -66,11 +66,11 @@ Evidence: [Chunk xyz] Source: https://greencloudvps.com/billing/store/windows-vp
 Evidence chunks will be provided in the user message."""
 
 DEFAULT_INTENTS = [
-    ("what_can_you_do", r"\b(what (can you|do you|does (this )?ai) do|bạn làm gì|ai làm gì|chức năng)\b", "I'm GreenCloud's AI support assistant. I can help with questions about our VPS (Windows, Linux KVM, macOS), dedicated servers, pricing, setup guides, and policies. Our docs are at https://green.cloud/docs. What would you like to know?", 0),
-    ("who_are_you", r"\b(who are you|bạn là ai|ai là gì)\b", "I'm GreenCloud's AI support assistant. GreenCloud is a leading VPS and dedicated server provider (founded 2013), offering Windows VPS, KVM Linux VPS, macOS VPS, and bare-metal servers. I answer questions using our documentation at https://green.cloud/docs.", 1),
-    ("who_am_i", r"\b(who am i|tôi là ai|mình là ai)\b", "I don't have access to your GreenCloud account details. For billing, account info, or service management, please log in at https://greencloudvps.com/billing or contact our 24/7 support (average response: 9 minutes).", 2),
-    ("about_greencloud", r"\b(what is greencloud|about greencloud|greencloud là gì|giới thiệu greencloud)\b", "GreenCloud is an Infrastructure as a Service provider founded in 2013. We offer: Windows VPS (from $8/mo), KVM Linux VPS (from $6/mo), macOS VPS (from $22/mo), and dedicated servers (from $110/mo). 99.99% uptime, 24/7 in-house support (9-min avg response), 30 locations across 4 continents. Docs: https://green.cloud/docs", 3),
-    ("hello", r"^(hi|hello|hey|chào|xin chào)\s*!?$", "Hello! Welcome to GreenCloud support. I can help with VPS, dedicated servers, pricing, or how-to guides. What do you need?", 4),
+    ("what_can_you_do", r"\b(what (can you|do you|does (this )?ai) do|你能做什么|你可以做什么|有什么功能|bạn làm gì|ai làm gì|chức năng)\b", "我是 GreenCloud 的客服助手，可以根据知识库回答 VPS、独立服务器、价格方案、配置指南和政策相关问题。你想了解哪方面内容？", 0),
+    ("who_are_you", r"\b(who are you|你是谁|你是什么|bạn là ai|ai là gì)\b", "我是 GreenCloud 的客服助手，会基于已导入的知识库文档回答问题，并尽量给出来源。", 1),
+    ("who_am_i", r"\b(who am i|我是谁|我的账号是谁|tôi là ai|mình là ai)\b", "我无法直接访问你的账户详情。如果需要查询账单、账户信息或服务管理，请登录客户中心或联系人工客服。", 2),
+    ("about_greencloud", r"\b(what is greencloud|about greencloud|greencloud 是什么|介绍 greencloud|greencloud là gì|giới thiệu greencloud)\b", "GreenCloud 是一家基础设施服务提供商，提供 Windows VPS、KVM Linux VPS、macOS VPS 和独立服务器等服务。我可以根据知识库帮助你查询产品、价格、政策和使用指南。", 3),
+    ("hello", r"^(hi|hello|hey|你好|您好|嗨|chào|xin chào)\s*!?$", "你好，欢迎使用 GreenCloud 客服助手。我可以帮助你查询 VPS、独立服务器、价格、政策或操作指南。", 4),
 ]
 
 

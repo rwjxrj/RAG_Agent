@@ -1,22 +1,27 @@
-"""Embedding providers: OpenAI (default) or custom."""
+"""Embedding providers: OpenAI-compatible or Ollama."""
 
+import httpx
 from openai import AsyncOpenAI
 
-from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.search.base import EmbeddingProvider
-from app.services.llm_config import get_llm_api_key, get_llm_base_url
+from app.services.embedding_config import (
+    get_embedding_api_key,
+    get_embedding_base_url,
+    get_embedding_dimensions,
+    get_embedding_model,
+    get_embedding_provider_name,
+)
 
 logger = get_logger(__name__)
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
-    """OpenAI embeddings. Uses same API key/base_url as LLM (DB + env) for consistency."""
+    """OpenAI-compatible embeddings."""
 
     def __init__(self) -> None:
-        self._settings = get_settings()
-        api_key = get_llm_api_key()
-        base_url = get_llm_base_url()
+        api_key = get_embedding_api_key()
+        base_url = get_embedding_base_url()
         kwargs: dict = {"api_key": api_key}
         if base_url and base_url.strip():
             kwargs["base_url"] = base_url.strip().rstrip("/")
@@ -29,7 +34,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
         try:
             response = await self._client.embeddings.create(
-                model=self._settings.embedding_model,
+                model=get_embedding_model(),
                 input=texts,
             )
             return [d.embedding for d in response.data]
@@ -38,12 +43,47 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             raise
 
     def dimensions(self) -> int:
-        return self._settings.embedding_dimensions
+        return get_embedding_dimensions()
+
+
+class OllamaEmbeddingProvider(EmbeddingProvider):
+    """Ollama embeddings via /api/embeddings."""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed texts using Ollama."""
+        if not texts:
+            return []
+
+        base_url = get_embedding_base_url().strip().rstrip("/")
+        model = get_embedding_model()
+        vectors: list[list[float]] = []
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for text in texts:
+                    response = await client.post(
+                        f"{base_url}/api/embeddings",
+                        json={"model": model, "prompt": text},
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    vector = data.get("embedding")
+                    if not isinstance(vector, list):
+                        raise ValueError("Ollama embedding response missing embedding list")
+                    vectors.append(vector)
+            return vectors
+        except Exception as e:
+            logger.error("ollama_embedding_failed", error=str(e))
+            raise
+
+    def dimensions(self) -> int:
+        return get_embedding_dimensions()
 
 
 def get_embedding_provider() -> EmbeddingProvider:
     """Factory for embedding provider."""
-    settings = get_settings()
-    if settings.embedding_provider == "openai":
+    provider = get_embedding_provider_name()
+    if provider in {"openai", "custom"}:
         return OpenAIEmbeddingProvider()
-    raise ValueError(f"Unknown embedding provider: {settings.embedding_provider}")
+    if provider == "ollama":
+        return OllamaEmbeddingProvider()
+    raise ValueError(f"Unknown embedding provider: {provider}")

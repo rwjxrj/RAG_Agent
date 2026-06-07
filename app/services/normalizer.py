@@ -257,16 +257,16 @@ NORMALIZER_SYSTEM_PROMPT = (
 def _get_greeting_response() -> str:
     app_name = (get_settings().app_name or "").strip()
     if app_name:
-        return f"Hello! Welcome to {app_name} support. How can I help you today?"
-    return "Hello! Welcome. How can I help you today?"
+        return f"你好，欢迎使用 {app_name} 客服。有什么可以帮你？"
+    return "你好，有什么可以帮你？"
 
 
 def _get_out_of_scope_response() -> str:
     """Redirect when query is not about the support domain (AI self, personal, etc.)."""
     app_name = (get_settings().app_name or "").strip()
     if app_name:
-        return f"I'm here to help with {app_name} questions—pricing, policies, troubleshooting, and more. How can I assist you today?"
-    return "I'm here to help with product and support questions. How can I assist you today?"
+        return f"我可以帮助你查询 {app_name} 相关问题，包括价格、政策、排障和更多知识库内容。你想了解什么？"
+    return "我可以帮助你查询产品和客服支持相关问题。你想了解什么？"
 
 
 def _extract_probable_json(text: str) -> str:

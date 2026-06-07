@@ -1,6 +1,16 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { conversations, type ConversationDetail as ConvDetail, type Message, type FlowDebug } from '../api/client'
+import {
+  conversations,
+  decisionLabel,
+  docTypeLabel,
+  queryExtractionModeLabel,
+  sourceTypeLabel,
+  terminationReasonLabel,
+  type ConversationDetail as ConvDetail,
+  type Message,
+  type FlowDebug,
+} from '../api/client'
 import {
   ArrowLeft,
   Copy,
@@ -71,8 +81,9 @@ export default function ConversationDetail() {
         const reader = res.body?.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
+        let streamDone = false
         if (reader) {
-          while (true) {
+          while (!streamDone) {
             const { done, value } = await reader.read()
             if (done) break
             buffer += decoder.decode(value, { stream: true })
@@ -81,14 +92,20 @@ export default function ConversationDetail() {
             for (const ev of events) {
               const m = ev.match(/^data:\s*(.+)$/m)
               if (m) {
+                let data: { type?: string; data?: string } | null = null
                 try {
-                  const data = JSON.parse(m[1])
-                  if (data.type === 'content') setStreamingContent((prev) => prev + (data.data || ''))
-                  else if (data.type === 'done') break
+                  data = JSON.parse(m[1])
                 } catch {}
+                if (data?.type === 'content') setStreamingContent((prev) => prev + (data.data || ''))
+                else if (data?.type === 'error') throw new Error(data.data || '生成回复失败')
+                else if (data?.type === 'done') {
+                  streamDone = true
+                  break
+                }
               }
             }
           }
+          if (streamDone) reader.cancel().catch(() => {})
         }
         await load()
       } else {
@@ -141,9 +158,9 @@ export default function ConversationDetail() {
             <CopyableId id={conv.id} />
           </div>
           <div className="flex items-center gap-3 text-xs text-zinc-500 mt-0.5">
-            <span className="capitalize">{conv.source_type} / {conv.source_id}</span>
+            <span>{sourceTypeLabel(conv.source_type)} / {conv.source_id}</span>
             <span className="text-zinc-700">·</span>
-            <span>{new Date(conv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+            <span>{new Date(conv.created_at).toLocaleDateString('zh-CN')}</span>
             <span className="text-zinc-700">·</span>
             <span>{conv.messages.length} 条消息</span>
           </div>
@@ -304,7 +321,7 @@ function MessageBubble({ message }: { message: Message }) {
 
         <div className={`flex items-center gap-2 mt-1.5 px-1 ${isUser ? 'flex-row-reverse' : ''}`}>
           <span className="text-[11px] text-zinc-600">
-            {new Date(message.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+            {new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
           </span>
         </div>
 
@@ -321,7 +338,7 @@ function MessageBubble({ message }: { message: Message }) {
                            hover:bg-violet-500/15 transition-colors"
               >
                 <ExternalLink size={10} />
-                {c.doc_type || c.source_url || c.chunk_id}
+                {docTypeLabel(c.doc_type) || c.source_url || c.chunk_id}
               </a>
             ))}
           </div>
@@ -333,7 +350,7 @@ function MessageBubble({ message }: { message: Message }) {
               {debug.decision != null && (
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-violet-500/10 text-violet-400 border border-violet-500/15">
                   <Zap size={10} />
-                  {debug.decision}
+                  {decisionLabel(debug.decision)}
                 </span>
               )}
               {debug.confidence != null && (
@@ -341,7 +358,7 @@ function MessageBubble({ message }: { message: Message }) {
               )}
               {debug.intent_cache && (
                 <span className="px-2.5 py-1 rounded-lg text-[11px] bg-white/[0.03] text-zinc-400 border border-white/[0.05]">
-                  cache: {debug.intent_cache}
+                  意图命中：{debug.intent_cache}
                 </span>
               )}
             </div>
@@ -379,10 +396,10 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
   return (
     <div className="mt-2 glass rounded-2xl overflow-hidden text-xs animate-slide-up">
       {(debug.stage_reasons && debug.stage_reasons.length > 0) || debug.termination_reason ? (
-        <DebugSection icon={<Zap size={13} />} title="Decision Path">
+        <DebugSection icon={<Zap size={13} />} title="决策路径">
           <div className="space-y-1.5 text-zinc-400">
             {debug.termination_reason && (
-              <div>结束原因：<span className="text-zinc-300 capitalize">{debug.termination_reason.replace(/_/g, ' ')}</span></div>
+              <div>结束原因：<span className="text-zinc-300">{terminationReasonLabel(debug.termination_reason)}</span></div>
             )}
             {debug.stage_reasons && debug.stage_reasons.length > 0 && (
               <div>
@@ -401,7 +418,7 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
       {(debug.decision != null || debug.confidence != null || debug.followup_questions?.length || debug.decision_router?.reason_human) && (
         <DebugSection icon={<Zap size={13} />} title="决策与置信度">
           <div className="space-y-1.5 text-zinc-400">
-            {debug.decision != null && <div>决策：<span className="text-zinc-300">{debug.decision}</span></div>}
+            {debug.decision != null && <div>决策：<span className="text-zinc-300">{decisionLabel(debug.decision)}</span></div>}
             {debug.decision_router?.reason_human && (
               <div>原因：<span className="text-zinc-300">{debug.decision_router.reason_human}</span></div>
             )}
@@ -425,7 +442,7 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
           {debug.attempt != null && <div>尝试次数：<span className="text-zinc-300">{debug.attempt}</span></div>}
           {debug.intent_cache && <div>意图缓存：<span className="text-zinc-300">{debug.intent_cache}</span></div>}
           {debug.query_spec?.extraction_mode && (
-            <div>查询提取：<span className="text-zinc-300">{debug.query_spec.extraction_mode}</span></div>
+            <div>查询提取：<span className="text-zinc-300">{queryExtractionModeLabel(debug.query_spec.extraction_mode)}</span></div>
           )}
         </div>
       </DebugSection>
@@ -484,7 +501,7 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
               <div key={i} className="p-3 bg-black/20 rounded-xl">
                 <div className="flex items-center gap-2 mb-1.5">
                   <a href={e.source_url} target="_blank" rel="noopener noreferrer" className="text-violet-400 hover:text-violet-300 text-xs">
-                    {e.doc_type} · {e.chunk_id.slice(0, 8)}
+                    {docTypeLabel(e.doc_type)} · {e.chunk_id.slice(0, 8)}
                   </a>
                   {e.score != null && (
                     <span className="text-zinc-600 text-[10px] ml-auto">分数：{e.score.toFixed(3)}</span>
@@ -612,7 +629,7 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
                 <div className="flex items-center gap-2 mb-2 text-zinc-400">
                   <span className="font-medium text-violet-400">{call.task}</span>
                   <span className="text-[10px]">{call.model}</span>
-                  <span className="text-[10px]">in:{call.input_tokens} out:{call.output_tokens}</span>
+                  <span className="text-[10px]">输入:{call.input_tokens} 输出:{call.output_tokens}</span>
                   <span className="text-emerald-500/80 text-[10px]">${call.cost_usd?.toFixed(6)}</span>
                 </div>
                 <div className="space-y-2 text-[11px]">

@@ -40,7 +40,7 @@ export default function DocTypeList() {
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    if (!confirm('确定删除此文档类型？使用它的文档可能会显示为“other”。')) return
+    if (!confirm('确定删除此文档类型？使用它的文档可能会显示为“其他”。')) return
     try {
       await admin.deleteDocType(id)
       load()
@@ -64,7 +64,7 @@ export default function DocTypeList() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">文档类型</h1>
           <p className="text-sm text-zinc-500 mt-1.5">
-            用于分类器和文档表单的文档类型目录（policy、faq、howto 等）。
+            用于分类器和文档表单的文档类型目录（政策、常见问题、操作指南等）。
           </p>
         </div>
         <button
@@ -300,7 +300,7 @@ function DocTypeCreateModal({ onClose, onCreated }: { onClose: () => void; onCre
         <form onSubmit={handleSubmit} className="space-y-4">
           {err && <div className="text-red-400 text-sm">{err}</div>}
           <div>
-            <label className="block text-xs text-zinc-500 mb-1">Key（唯一 ID，小写）</label>
+        <label className="block text-xs text-zinc-500 mb-1">标识（唯一 ID，小写英文）</label>
             <input
               value={key}
               onChange={(e) => setKey(e.target.value)}

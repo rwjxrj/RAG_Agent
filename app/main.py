@@ -27,11 +27,13 @@ async def lifespan(app: FastAPI):
         from app.services.archi_config import refresh_cache as refresh_archi_config
         from app.services.branding_config import refresh_cache
         from app.services.doc_type_service import refresh_doc_type_cache
+        from app.services.embedding_config import refresh_cache as refresh_embedding_config
         from app.services.llm_config import refresh_cache as refresh_llm_config
         async with async_session_factory() as session:
             await refresh_cache(session)
             await refresh_doc_type_cache(session)
             await refresh_llm_config(session)
+            await refresh_embedding_config(session)
             await refresh_archi_config(session)
     except Exception as e:
         logger.warning("config_startup_failed", error=str(e))

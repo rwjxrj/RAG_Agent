@@ -20,6 +20,8 @@ from app.api.schemas import (
     DocTypeCreateRequest,
     DocTypeResponse,
     DocTypeUpdateRequest,
+    EmbeddingConfigResponse,
+    EmbeddingConfigUpdateRequest,
     SystemPromptResponse,
     SystemPromptUpdateRequest,
     LLMConfigResponse,
@@ -49,6 +51,7 @@ from app.db.session import get_db
 from app.services.archi_config import refresh_cache as refresh_archi_config
 from app.services.branding_config import refresh_cache
 from app.services.doc_type_service import refresh_doc_type_cache
+from app.services.embedding_config import refresh_cache as refresh_embedding_config
 from app.services.llm_config import refresh_cache as refresh_llm_config
 from app.services.llm_gateway import clear_llm_cache
 from app.services.query_rewriter import clear_cache as clear_query_rewriter_cache
@@ -480,6 +483,75 @@ async def update_llm_config(
     )
 
 
+@router.get("/config/embedding", response_model=EmbeddingConfigResponse)
+async def get_embedding_config(_auth: str = Depends(verify_admin_api_key)):
+    """Get current embedding config from cache/DB."""
+    from app.services.embedding_config import (
+        get_embedding_api_key,
+        get_embedding_base_url,
+        get_embedding_dimensions,
+        get_embedding_model,
+        get_embedding_provider_name,
+    )
+
+    return EmbeddingConfigResponse(
+        embedding_provider=get_embedding_provider_name(),
+        embedding_model=get_embedding_model(),
+        embedding_dimensions=get_embedding_dimensions(),
+        embedding_api_key=get_embedding_api_key(),
+        embedding_base_url=get_embedding_base_url(),
+    )
+
+
+@router.put("/config/embedding", response_model=EmbeddingConfigResponse)
+async def update_embedding_config(
+    body: EmbeddingConfigUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(verify_admin_api_key),
+):
+    """Update embedding config. Only provided fields are updated."""
+    from app.db.models import generate_uuid
+
+    keys_to_update: list[tuple[str, str]] = []
+    if body.embedding_provider is not None:
+        keys_to_update.append(("embedding_provider", body.embedding_provider))
+    if body.embedding_model is not None:
+        keys_to_update.append(("embedding_model", body.embedding_model))
+    if body.embedding_dimensions is not None:
+        keys_to_update.append(("embedding_dimensions", str(body.embedding_dimensions)))
+    if body.embedding_api_key is not None:
+        keys_to_update.append(("embedding_api_key", body.embedding_api_key))
+    if body.embedding_base_url is not None:
+        keys_to_update.append(("embedding_base_url", body.embedding_base_url))
+
+    for key, value in keys_to_update:
+        result = await db.execute(select(AppConfig).where(AppConfig.key == key).limit(1))
+        row = result.scalars().one_or_none()
+        if row:
+            row.value = value
+        else:
+            row = AppConfig(id=generate_uuid(), key=key, value=value)
+            db.add(row)
+    await db.flush()
+    await refresh_embedding_config(db)
+
+    from app.services.embedding_config import (
+        get_embedding_api_key,
+        get_embedding_base_url,
+        get_embedding_dimensions,
+        get_embedding_model,
+        get_embedding_provider_name,
+    )
+
+    return EmbeddingConfigResponse(
+        embedding_provider=get_embedding_provider_name(),
+        embedding_model=get_embedding_model(),
+        embedding_dimensions=get_embedding_dimensions(),
+        embedding_api_key=get_embedding_api_key(),
+        embedding_base_url=get_embedding_base_url(),
+    )
+
+
 @router.get("/config/archi", response_model=ArchiConfigResponse)
 async def get_archi_config(_auth: str = Depends(verify_admin_api_key)):
     """Get archi v3 feature flags from cache/DB."""
@@ -594,6 +666,7 @@ async def refresh_config_cache(
     await refresh_cache(db)
     await refresh_doc_type_cache(db)
     await refresh_llm_config(db)
+    await refresh_embedding_config(db)
     await refresh_archi_config(db)
     return {"status": "ok", "message": "Cache refreshed"}
 
@@ -718,6 +791,7 @@ async def update_config(
     await db.flush()
     await refresh_cache(db)
     await refresh_llm_config(db)
+    await refresh_embedding_config(db)
     return AppConfigResponse(key=row.key, value=row.value)
 
 

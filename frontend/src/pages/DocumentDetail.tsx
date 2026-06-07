@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { documents, admin, type Document, type DocType } from '../api/client'
+import { documents, admin, docTypeLabel, type Document, type DocType } from '../api/client'
 import {
   ArrowLeft,
   Save,
@@ -236,7 +236,7 @@ export default function DocumentDetail() {
                 onChange={(e) => setEditMetadata(e.target.value)}
                 className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
                 rows={5}
-                aria-label="Metadata JSON"
+                aria-label="元数据 JSON"
               />
             </div>
           </div>
@@ -254,7 +254,7 @@ export default function DocumentDetail() {
                 <ExternalLink size={12} />
               </a>
             </DetailRow>
-            <DetailRow icon={<Tag size={15} />} label="类型" value={doc.doc_type} />
+            <DetailRow icon={<Tag size={15} />} label="类型" value={docTypeLabel(doc.doc_type)} />
             <DetailRow icon={<Layers size={15} />} label="分块" value={String(doc.chunks_count)} />
             <DetailRow icon={<Calendar size={15} />} label="创建时间" value={new Date(doc.created_at).toLocaleString('zh-CN')} />
             <DetailRow icon={<Clock size={15} />} label="更新时间" value={new Date(doc.updated_at).toLocaleString('zh-CN')} />

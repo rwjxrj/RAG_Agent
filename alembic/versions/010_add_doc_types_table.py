@@ -17,12 +17,12 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 DEFAULT_DOC_TYPES = [
-    ("policy", "Policy", "Privacy policy, data policy, general policies", 0),
-    ("tos", "Terms of Service", "Terms of service, terms of use, legal terms", 1),
-    ("faq", "FAQ", "Frequently asked questions, Q&A format", 2),
-    ("howto", "How-to", "Tutorials, setup guides, documentation", 3),
-    ("pricing", "Pricing", "Plans, prices, product offerings, billing", 4),
-    ("other", "Other", "Blog, about, news, general content", 5),
+    ("policy", "政策", "隐私政策、数据政策、通用政策等正式规则", 0),
+    ("tos", "服务条款", "服务条款、使用条款、法律条款等内容", 1),
+    ("faq", "常见问题", "常见问答、Q&A 格式的问题与答案", 2),
+    ("howto", "操作指南", "教程、配置步骤、使用文档和排障指南", 3),
+    ("pricing", "价格方案", "套餐、价格、产品方案、账单和购买信息", 4),
+    ("other", "其他", "博客、关于我们、新闻和其他通用内容", 5),
 ]
 
 

@@ -51,6 +51,66 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 
 export type SourceType = 'ticket' | 'livechat'
 
+export const DOC_TYPE_LABELS: Record<string, string> = {
+  policy: '政策',
+  tos: '服务条款',
+  faq: '常见问题',
+  howto: '操作指南',
+  docs: '文档',
+  pricing: '价格方案',
+  conversation: '历史会话',
+  ticket: '工单',
+  other: '其他',
+}
+
+export function docTypeLabel(value?: string | null): string {
+  if (!value) return '未分类'
+  return DOC_TYPE_LABELS[value] || value
+}
+
+export const SOURCE_TYPE_LABELS: Record<string, string> = {
+  ticket: '工单',
+  livechat: '在线聊天',
+}
+
+export function sourceTypeLabel(value?: string | null): string {
+  if (!value) return '未知来源'
+  return SOURCE_TYPE_LABELS[value] || value
+}
+
+export const DECISION_LABELS: Record<string, string> = {
+  PASS: '直接回答',
+  ASK_USER: '需要追问',
+  ESCALATE: '转人工',
+}
+
+export function decisionLabel(value?: string | null): string {
+  if (!value) return '未决策'
+  return DECISION_LABELS[value] || value
+}
+
+export const TERMINATION_REASON_LABELS: Record<string, string> = {
+  done: '已完成',
+  ask_user: '需要追问',
+  escalate: '转人工',
+  max_attempts_reached: '达到最大尝试次数',
+}
+
+export function terminationReasonLabel(value?: string | null): string {
+  if (!value) return '未知'
+  return TERMINATION_REASON_LABELS[value] || value.replace(/_/g, ' ')
+}
+
+export const QUERY_EXTRACTION_MODE_LABELS: Record<string, string> = {
+  llm_primary: 'LLM 提取',
+  rule_fallback: '规则兜底',
+}
+
+export function queryExtractionModeLabel(value?: string | null): string {
+  if (!value) return '未知'
+  return QUERY_EXTRACTION_MODE_LABELS[value] || value
+}
+
 export const conversations = {
   list: (page = 1, pageSize = 20, sourceType?: string, sourceId?: string) => {
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
@@ -184,6 +244,22 @@ export interface LLMConfigUpdate {
   llm_base_url?: string
 }
 
+export interface EmbeddingConfig {
+  embedding_provider: 'openai' | 'custom' | 'ollama'
+  embedding_model: string
+  embedding_dimensions: number
+  embedding_api_key: string
+  embedding_base_url: string
+}
+
+export interface EmbeddingConfigUpdate {
+  embedding_provider?: 'openai' | 'custom' | 'ollama'
+  embedding_model?: string
+  embedding_dimensions?: number
+  embedding_api_key?: string
+  embedding_base_url?: string
+}
+
 export interface Intent {
   id: string
   key: string
@@ -292,6 +368,10 @@ export const admin = {
   getLLMConfig: () => http.get<LLMConfig>(`/admin/config/llm`).then((res) => res.data),
   updateLLMConfig: (data: LLMConfigUpdate) =>
     http.put<LLMConfig>(`/admin/config/llm`, data).then((res) => res.data),
+  getEmbeddingConfig: () =>
+    http.get<EmbeddingConfig>(`/admin/config/embedding`).then((res) => res.data),
+  updateEmbeddingConfig: (data: EmbeddingConfigUpdate) =>
+    http.put<EmbeddingConfig>(`/admin/config/embedding`, data).then((res) => res.data),
   getArchiConfig: () => http.get<ArchiConfig>(`/admin/config/archi`).then((res) => res.data),
   updateArchiConfig: (data: ArchiConfigUpdate) =>
     http.put<ArchiConfig>(`/admin/config/archi`, data).then((res) => res.data),

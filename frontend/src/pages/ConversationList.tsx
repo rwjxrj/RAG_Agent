@@ -128,9 +128,9 @@ export default function ConversationList() {
                   </td>
                   <td className="px-5 py-4 text-zinc-400">{c.source_id}</td>
                   <td className="px-5 py-4 text-zinc-400">
-                    {new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    {new Date(c.created_at).toLocaleDateString('zh-CN')}
                     <span className="text-zinc-600 ml-1.5 text-xs">
-                      {new Date(c.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                      {new Date(c.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </td>
                   <td className="px-5 py-4">

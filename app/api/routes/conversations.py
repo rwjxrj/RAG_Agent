@@ -300,6 +300,7 @@ async def send_message_stream(
 ):
     """Send a message and get SSE streaming response."""
     from fastapi.responses import StreamingResponse
+    import asyncio
     import json
 
     result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
@@ -313,56 +314,75 @@ async def send_message_stream(
     content = sanitize_user_input(body.content)
 
     async def event_generator():
-        user_msg = Message(conversation_id=conversation_id, role="user", content=content)
-        db.add(user_msg)
-        await db.flush()
+        def sse(payload: dict) -> str:
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-        hist_result = await db.execute(
-            select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at)
-        )
-        history_msgs = hist_result.scalars().all()
-        raw_history = [
-            {"role": m.role, "content": m.content}
-            for m in history_msgs
-            if m.id != user_msg.id
-        ]
-        conversation_history = truncate_for_pipeline(raw_history)
+        try:
+            user_msg = Message(conversation_id=conversation_id, role="user", content=content)
+            db.add(user_msg)
+            await db.flush()
 
-        answer_svc = AnswerService()
-        output = await answer_svc.generate(
-            query=content,
-            conversation_history=conversation_history,
-            trace_id=get_trace_id(),
-        )
+            hist_result = await db.execute(
+                select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at)
+            )
+            history_msgs = hist_result.scalars().all()
+            raw_history = [
+                {"role": m.role, "content": m.content}
+                for m in history_msgs
+                if m.id != user_msg.id
+            ]
+            conversation_history = truncate_for_pipeline(raw_history)
 
-        # Stream content chunks
-        for i in range(0, len(output.answer), 100):
-            chunk = output.answer[i : i + 100]
-            yield f"data: {json.dumps({'type': 'content', 'data': chunk})}\n\n"
+            answer_svc = AnswerService()
+            generate_task = asyncio.create_task(
+                answer_svc.generate(
+                    query=content,
+                    conversation_history=conversation_history,
+                    trace_id=get_trace_id(),
+                )
+            )
+            yield sse({"type": "status", "data": "started"})
+            while not generate_task.done():
+                yield sse({"type": "ping", "data": "working"})
+                await asyncio.sleep(10)
+            output = await generate_task
 
-        yield f"data: {json.dumps({'type': 'citations', 'data': output.citations})}\n\n"
-        yield f"data: {json.dumps({'type': 'done', 'data': {'decision': output.decision, 'confidence': output.confidence}})}\n\n"
+            # Persist assistant message before done, so the final GET sees the message.
+            debug_meta = dict(output.debug or {})
+            debug_meta["decision"] = output.decision
+            debug_meta["confidence"] = output.confidence
+            debug_meta["followup_questions"] = output.followup_questions
+            assistant_msg = Message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=output.answer,
+                debug_metadata=debug_meta,
+            )
+            db.add(assistant_msg)
+            await db.flush()
+            for c in output.citations:
+                if isinstance(c, dict) and c.get("chunk_id"):
+                    cit = Citation(message_id=assistant_msg.id, chunk_id=c.get("chunk_id", ""), score=1.0)
+                    db.add(cit)
+            await db.commit()
 
-        # Persist assistant message (with full flow debug)
-        debug_meta = dict(output.debug or {})
-        debug_meta["decision"] = output.decision
-        debug_meta["confidence"] = output.confidence
-        debug_meta["followup_questions"] = output.followup_questions
-        assistant_msg = Message(
-            conversation_id=conversation_id,
-            role="assistant",
-            content=output.answer,
-            debug_metadata=debug_meta,
-        )
-        db.add(assistant_msg)
-        await db.flush()
-        for c in output.citations:
-            cit = Citation(message_id=assistant_msg.id, chunk_id=c.get("chunk_id", ""), score=1.0)
-            db.add(cit)
-        await db.commit()
+            for i in range(0, len(output.answer), 100):
+                chunk = output.answer[i : i + 100]
+                yield sse({"type": "content", "data": chunk})
+
+            yield sse({"type": "citations", "data": output.citations})
+            yield sse({"type": "done", "data": {"decision": output.decision, "confidence": output.confidence}})
+        except Exception as e:
+            logger.error("conversation_stream_failed", conversation_id=conversation_id, error=str(e))
+            await db.rollback()
+            yield sse({"type": "error", "data": "生成回复失败，请检查后端日志。"})
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )

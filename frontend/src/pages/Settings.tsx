@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { admin, type ArchiConfig, type LLMConfig } from '../api/client'
+import { admin, type ArchiConfig, type EmbeddingConfig, type LLMConfig } from '../api/client'
 import { Loader2, Cpu, Key, Link2, Save, RefreshCw, CheckCircle2, AlertCircle, Sparkles, FileText, Globe } from 'lucide-react'
 
 type LlmProviderPresetKey =
@@ -85,9 +85,11 @@ function detectLlmProviderPreset(baseUrl: string, model: string): LlmProviderPre
 
 export default function Settings() {
   const [, setConfig] = useState<LLMConfig | null>(null)
+  const [, setEmbeddingConfig] = useState<EmbeddingConfig | null>(null)
   const [, setArchiConfig] = useState<ArchiConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [savingEmbedding, setSavingEmbedding] = useState(false)
   const [savingArchi, setSavingArchi] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshingConversationCache, setRefreshingConversationCache] = useState(false)
@@ -99,6 +101,12 @@ export default function Settings() {
   const [llmApiKey, setLlmApiKey] = useState('')
   const [llmBaseUrl, setLlmBaseUrl] = useState('')
   const [llmProviderPreset, setLlmProviderPreset] = useState<LlmProviderPresetKey>('custom')
+
+  const [embeddingProvider, setEmbeddingProvider] = useState<'openai' | 'custom' | 'ollama'>('openai')
+  const [embeddingModel, setEmbeddingModel] = useState('')
+  const [embeddingDimensions, setEmbeddingDimensions] = useState(1536)
+  const [embeddingApiKey, setEmbeddingApiKey] = useState('')
+  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState('')
 
   const [languageDetect, setLanguageDetect] = useState(true)
   const [decisionRouterLlm, setDecisionRouterLlm] = useState(false)
@@ -120,14 +128,20 @@ export default function Settings() {
   const [autoGenLoading, setAutoGenLoading] = useState(false)
 
   useEffect(() => {
-    Promise.all([admin.getLLMConfig(), admin.getArchiConfig(), admin.getSystemPrompt()])
-      .then(([llmData, archiData, promptData]) => {
+    Promise.all([admin.getLLMConfig(), admin.getEmbeddingConfig(), admin.getArchiConfig(), admin.getSystemPrompt()])
+      .then(([llmData, embeddingData, archiData, promptData]) => {
         setConfig(llmData)
         setLlmModel(llmData.llm_model)
         setLlmFallbackModel(llmData.llm_fallback_model)
         setLlmApiKey(llmData.llm_api_key)
         setLlmBaseUrl(llmData.llm_base_url)
         setLlmProviderPreset(detectLlmProviderPreset(llmData.llm_base_url, llmData.llm_model))
+        setEmbeddingConfig(embeddingData)
+        setEmbeddingProvider(embeddingData.embedding_provider)
+        setEmbeddingModel(embeddingData.embedding_model)
+        setEmbeddingDimensions(embeddingData.embedding_dimensions)
+        setEmbeddingApiKey(embeddingData.embedding_api_key)
+        setEmbeddingBaseUrl(embeddingData.embedding_base_url)
         setArchiConfig(archiData)
         setLanguageDetect(archiData.language_detect_enabled)
         setDecisionRouterLlm(archiData.decision_router_use_llm)
@@ -175,14 +189,43 @@ export default function Settings() {
     }
   }
 
+  const handleSaveEmbedding = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setSuccess(null)
+    setSavingEmbedding(true)
+    try {
+      await admin.updateEmbeddingConfig({
+        embedding_provider: embeddingProvider,
+        embedding_model: embeddingModel.trim(),
+        embedding_dimensions: embeddingDimensions,
+        embedding_api_key: embeddingApiKey,
+        embedding_base_url: embeddingBaseUrl.trim(),
+      })
+      const data = await admin.getEmbeddingConfig()
+      setEmbeddingConfig(data)
+      setEmbeddingProvider(data.embedding_provider)
+      setEmbeddingModel(data.embedding_model)
+      setEmbeddingDimensions(data.embedding_dimensions)
+      setEmbeddingApiKey(data.embedding_api_key)
+      setEmbeddingBaseUrl(data.embedding_base_url)
+      setSuccess('向量化模型配置已保存，缓存已刷新。')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存向量化配置失败')
+    } finally {
+      setSavingEmbedding(false)
+    }
+  }
+
   const handleRefresh = async () => {
     setError(null)
     setSuccess(null)
     setRefreshing(true)
     try {
       await admin.refreshConfigCache()
-      const [llmData, archiData, promptData] = await Promise.all([
+      const [llmData, embeddingData, archiData, promptData] = await Promise.all([
         admin.getLLMConfig(),
+        admin.getEmbeddingConfig(),
         admin.getArchiConfig(),
         admin.getSystemPrompt(),
       ])
@@ -192,6 +235,12 @@ export default function Settings() {
       setLlmApiKey(llmData.llm_api_key)
       setLlmBaseUrl(llmData.llm_base_url)
       setLlmProviderPreset(detectLlmProviderPreset(llmData.llm_base_url, llmData.llm_model))
+      setEmbeddingConfig(embeddingData)
+      setEmbeddingProvider(embeddingData.embedding_provider)
+      setEmbeddingModel(embeddingData.embedding_model)
+      setEmbeddingDimensions(embeddingData.embedding_dimensions)
+      setEmbeddingApiKey(embeddingData.embedding_api_key)
+      setEmbeddingBaseUrl(embeddingData.embedding_base_url)
       setArchiConfig(archiData)
       setLanguageDetect(archiData.language_detect_enabled)
       setDecisionRouterLlm(archiData.decision_router_use_llm)
@@ -286,6 +335,16 @@ export default function Settings() {
     setLlmFallbackModel(preset.fallbackModel)
     setLlmBaseUrl(preset.baseUrl)
     setLlmModelEconomy(preset.economyModel)
+  }
+
+  const handleEmbeddingProviderChange = (value: 'openai' | 'custom' | 'ollama') => {
+    setEmbeddingProvider(value)
+    if (value === 'ollama') {
+      setEmbeddingModel('nomic-embed-text')
+      setEmbeddingDimensions(768)
+      setEmbeddingApiKey('')
+      setEmbeddingBaseUrl('http://host.docker.internal:11434')
+    }
   }
 
   const handleAutoGenerate = async () => {
@@ -468,6 +527,100 @@ export default function Settings() {
       <section className="glass rounded-2xl p-6">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
           <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
+            <Cpu size={15} className="text-violet-400" />
+          </div>
+          向量化模型
+        </h2>
+        <p className="text-sm text-zinc-400 mb-5">
+          上传知识库时用于生成向量，和 LLM 是两类模型。Ollama 本地模型建议使用 nomic-embed-text。
+        </p>
+        <form onSubmit={handleSaveEmbedding} className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 mb-1.5">向量化供应商</label>
+            <select
+              value={embeddingProvider}
+              onChange={(e) => handleEmbeddingProviderChange(e.target.value as 'openai' | 'custom' | 'ollama')}
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
+              disabled={savingEmbedding}
+            >
+              <option value="openai">OpenAI-compatible</option>
+              <option value="custom">自定义 OpenAI-compatible</option>
+              <option value="ollama">Ollama 本地</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 mb-1.5">向量化模型</label>
+            <input
+              type="text"
+              value={embeddingModel}
+              onChange={(e) => setEmbeddingModel(e.target.value)}
+              placeholder={embeddingProvider === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small'}
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
+              disabled={savingEmbedding}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 mb-1.5">向量维度</label>
+            <input
+              type="number"
+              min={1}
+              value={embeddingDimensions}
+              onChange={(e) => setEmbeddingDimensions(Number(e.target.value) || 1)}
+              placeholder={embeddingProvider === 'ollama' ? '768' : '1536'}
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
+              disabled={savingEmbedding}
+            />
+            <p className="text-xs text-zinc-500 mt-1">更换模型或维度后，已有知识库通常需要重新上传或重新入库。</p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 mb-1.5 flex items-center gap-1.5">
+              <Key size={12} />
+              API key（Token）
+            </label>
+            <input
+              type="password"
+              value={embeddingApiKey}
+              onChange={(e) => setEmbeddingApiKey(e.target.value)}
+              placeholder={embeddingProvider === 'ollama' ? 'Ollama 通常留空' : '留空则回退到 LLM API key'}
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
+              disabled={savingEmbedding}
+              autoComplete="off"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 mb-1.5 flex items-center gap-1.5">
+              <Link2 size={12} />
+              Base URL
+            </label>
+            <input
+              type="url"
+              value={embeddingBaseUrl}
+              onChange={(e) => setEmbeddingBaseUrl(e.target.value)}
+              placeholder={embeddingProvider === 'ollama' ? 'http://host.docker.internal:11434' : 'https://api.openai.com/v1'}
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
+              disabled={savingEmbedding}
+            />
+            <p className="text-xs text-zinc-500 mt-1">
+              Docker 中访问宿主机 Ollama 用 host.docker.internal；非 Docker 同机运行可用 http://localhost:11434。
+            </p>
+          </div>
+          <button
+            type="submit"
+            disabled={savingEmbedding || !embeddingModel.trim()}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{
+              background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+            }}
+          >
+            {savingEmbedding ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            保存向量化配置
+          </button>
+        </form>
+      </section>
+
+      <section className="glass rounded-2xl p-6">
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
+          <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
             <RefreshCw size={15} className="text-violet-400" />
           </div>
           会话缓存
@@ -622,14 +775,14 @@ export default function Settings() {
           />
           <ToggleRow
             label="文档类型分类器"
-            description="根据内容而不是 URL，使用 LLM 分类抓取文档（policy、tos、faq、howto、pricing）"
+            description="根据内容而不是 URL，使用 LLM 分类抓取文档（政策、服务条款、常见问题、操作指南、价格方案）"
             checked={docTypeClassifier}
             onChange={setDocTypeClassifier}
             disabled={savingArchi}
           />
           <ToggleRow
             label="检索文档类型（LLM）"
-            description="根据查询语义使用 LLM 选择要检索的文档类型（policy、faq、pricing 等）"
+            description="根据查询语义使用 LLM 选择要检索的文档类型（政策、常见问题、价格方案等）"
             checked={retrievalDocTypeUseLlm}
             onChange={setRetrievalDocTypeUseLlm}
             disabled={savingArchi}
