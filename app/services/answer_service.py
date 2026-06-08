@@ -4,6 +4,8 @@ Orchestrates the RAG pipeline via Orchestrator. Phase logic lives in
 app.services.phases; helpers in answer_utils and flow_debug.
 """
 
+import time
+
 from app.core.config import get_settings
 from app.services.flow_debug import _pipeline_log
 from app.core.logging import get_logger
@@ -20,7 +22,10 @@ from app.services.orchestrator import (
 from app.services.archi_config import get_language_detect_enabled
 from app.services.language_detect import detect_language
 from app.services.normalizer import normalize as normalize_query
-from app.services.output_builder import build_output as build_answer_output
+from app.services.output_builder import (
+    build_output as build_answer_output,
+    format_phase_timings,
+)
 from app.services.phases import (
     execute_assess_evidence,
     execute_decide,
@@ -35,6 +40,23 @@ from app.services.reviewer import ReviewerGate
 __all__ = ["AnswerOutput", "AnswerService"]
 
 logger = get_logger(__name__)
+
+
+def _add_phase_timing(timings: dict[str, float], key: str, elapsed_seconds: float) -> None:
+    timings[key] = float(timings.get(key, 0.0) or 0.0) + max(0.0, elapsed_seconds)
+
+
+def _attach_answer_runtime_debug(
+    output: AnswerOutput,
+    timings: dict[str, float],
+    *,
+    retry_count: int = 0,
+) -> AnswerOutput:
+    normalized_timings = format_phase_timings(timings)
+    output.debug["timings"] = normalized_timings
+    output.debug.update(normalized_timings)
+    output.debug["retry_count"] = max(0, int(retry_count or 0))
+    return output
 
 
 class AnswerService:
@@ -63,6 +85,17 @@ class AnswerService:
         trace_id: str | None = None,
     ) -> AnswerOutput:
         """Generate grounded answer with retrieval and reviewer gate."""
+        total_started = time.perf_counter()
+        phase_timings: dict[str, float] = {}
+
+        def _finish(output: AnswerOutput, *, retry_count: int = 0) -> AnswerOutput:
+            phase_timings["total"] = time.perf_counter() - total_started
+            return _attach_answer_runtime_debug(
+                output,
+                phase_timings,
+                retry_count=retry_count,
+            )
+
         from app.core.tracing import llm_usage_var, llm_call_log_var
         llm_usage_var.set([])
         from app.services.archi_config import get_debug_llm_calls
@@ -75,15 +108,16 @@ class AnswerService:
         if intent:
             _pipeline_log("answer_service", "intent_cache_hit", intent=intent.intent, trace_id=trace_id)
             logger.debug("intent_cache_hit", intent=intent.intent)
-            return AnswerOutput(
+            return _finish(AnswerOutput(
                 decision="PASS",
                 answer=intent.answer,
                 followup_questions=[],
                 citations=[],
                 confidence=1.0,
                 debug={"trace_id": trace_id, "intent_cache": intent.intent},
-            )
+            ))
 
+        query_extract_started = time.perf_counter()
         source_lang = detect_language(query) if get_language_detect_enabled() else "en"
         query_spec: QuerySpec | None = None
         if getattr(self._settings, "normalizer_enabled", True):
@@ -99,6 +133,11 @@ class AnswerService:
                     retrieval_profile=getattr(query_spec, "retrieval_profile", ""),
                     trace_id=trace_id,
                 )
+        _add_phase_timing(
+            phase_timings,
+            "query_extract",
+            time.perf_counter() - query_extract_started,
+        )
 
         effective_query = query
         if query_spec and query_spec.canonical_query_en:
@@ -111,14 +150,14 @@ class AnswerService:
             if not canned:
                 app_name = (self._settings.app_name or "").strip()
                 canned = f"你好，欢迎使用 {app_name} 客服。有什么可以帮你？" if app_name else "你好，有什么可以帮你？"
-            return AnswerOutput(
+            return _finish(AnswerOutput(
                 decision="PASS",
                 answer=canned,
                 followup_questions=[],
                 citations=[],
                 confidence=1.0,
                 debug={"trace_id": trace_id, "skip_retrieval": True},
-            )
+            ))
 
         required_evidence = (
             query_spec.required_evidence if query_spec else []
@@ -152,13 +191,15 @@ class AnswerService:
             effective_query=effective_query,
             source_lang=source_lang,
             extra={
+                "phase_timings": phase_timings,
                 "required_evidence": required_evidence,
                 "hard_requirements": hard_requirements,
                 "primary_hypothesis_name": getattr(getattr(query_spec, "primary_hypothesis", None), "name", "primary") if query_spec else "primary",
             },
         )
 
-        return await self._orchestrator.run(ctx, self)
+        output = await self._orchestrator.run(ctx, self)
+        return _finish(output, retry_count=ctx.retrieval_attempt)
 
     async def _execute_understand(self, ctx: OrchestratorContext) -> PhaseResult:
         """UNDERSTAND: already done before orchestrator."""

@@ -327,9 +327,7 @@ def parse_llm_response(content: str) -> dict[str, Any]:
         logger.warning("llm_json_parse_failed", error=str(exc), content_preview=text[:200])
         fallback = {
             "decision": "ASK_USER",
-            "answer": text[:500]
-            if text
-            else "We had trouble formatting the response. Could you rephrase your question?",
+            "answer": text[:500] if text else "",
             "followup_questions": ["Could you provide more details about your question?"],
             "citations": [],
             "confidence": 0.0,

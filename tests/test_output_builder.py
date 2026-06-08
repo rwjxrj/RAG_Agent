@@ -78,6 +78,67 @@ async def test_build_output_reports_shadow_rollout_when_enabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_build_output_includes_phase_timings_and_retry_count():
+    ctx = OrchestratorContext(
+        query="pricing",
+        max_attempts=3,
+        retrieval_attempt=2,
+        extra={
+            "phase_timings": {
+                "query_extract": 0.011234,
+                "retrieve": 0.022345,
+                "assess_evidence": 0.033456,
+                "generate": 0.044567,
+                "verify": 0.055678,
+            }
+        },
+    )
+    ctx.answer = "answer"
+    ctx.followup = []
+    ctx.confidence = 0.7
+    ctx.review_result = ReviewResult(
+        status="accept",
+        unsupported_claims=[],
+        weakly_supported_claims=[],
+        claim_to_citation_map={},
+        reviewer_notes=[],
+        final_lane="PASS_EXACT",
+        suggested_retry_plan=None,
+    )
+
+    out = await build_output(
+        ctx,
+        OrchestratorAction.DONE,
+        get_model_for_query=lambda _: "test-model",
+    )
+
+    assert out.debug["retry_count"] == 2
+    assert set(out.debug["timings"]) == {
+        "query_extract",
+        "retrieve",
+        "assess_evidence",
+        "rerank",
+        "generate",
+        "verify",
+        "total",
+    }
+    assert out.debug["timings"]["query_extract"] == pytest.approx(0.011234)
+    assert out.debug["timings"]["retrieve"] == pytest.approx(0.022345)
+    assert out.debug["timings"]["assess_evidence"] == pytest.approx(0.033456)
+    assert out.debug["timings"]["rerank"] == 0.0
+    assert out.debug["timings"]["generate"] == pytest.approx(0.044567)
+    assert out.debug["timings"]["verify"] == pytest.approx(0.055678)
+    assert out.debug["timings"]["total"] == 0.0
+    assert out.debug["query_extract"] == pytest.approx(0.011234)
+    assert out.debug["retrieve"] == pytest.approx(0.022345)
+    assert out.debug["assess_evidence"] == pytest.approx(0.033456)
+    assert out.debug["rerank"] == 0.0
+    assert out.debug["generate"] == pytest.approx(0.044567)
+    assert out.debug["verify"] == pytest.approx(0.055678)
+    assert out.debug["total"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_build_output_uses_bounded_availability_fallback_after_retry_exhaustion():
     evidence_chunk = type(
         "E",

@@ -12,6 +12,36 @@ from app.services.archi_config import get_final_polish_enabled, get_page_kind_fi
 from app.services.orchestrator import OrchestratorAction, OrchestratorContext
 from app.services.schemas import AnswerOutput
 
+_PHASE_TIMING_KEYS = (
+    "query_extract",
+    "retrieve",
+    "assess_evidence",
+    "rerank",
+    "generate",
+    "verify",
+    "total",
+)
+
+
+def format_phase_timings(raw_timings: dict | None) -> dict[str, float]:
+    """Normalize phase timings to a stable debug payload shape."""
+    timings = raw_timings if isinstance(raw_timings, dict) else {}
+    normalized: dict[str, float] = {}
+    for key in _PHASE_TIMING_KEYS:
+        value = timings.get(key, 0.0)
+        try:
+            normalized[key] = round(max(0.0, float(value)), 6)
+        except (TypeError, ValueError):
+            normalized[key] = 0.0
+    return normalized
+
+
+def _attach_runtime_debug(debug_payload: dict, ctx: OrchestratorContext) -> None:
+    timings = format_phase_timings(ctx.extra.get("phase_timings"))
+    debug_payload["timings"] = timings
+    debug_payload.update(timings)
+    debug_payload["retry_count"] = max(0, int(ctx.retrieval_attempt or 0))
+
 
 def _format_target_label(query_spec) -> str:
     slots = getattr(query_spec, "resolved_slots", None) or {}
@@ -182,6 +212,7 @@ async def build_output(
             conversation_relevance=ctx.extra.get("conversation_relevance"),
         )
         debug_payload["rollout_flags"] = rollout_debug
+        _attach_runtime_debug(debug_payload, ctx)
         return AnswerOutput(
             decision="PASS",
             answer=answer,
@@ -232,6 +263,7 @@ async def build_output(
             conversation_relevance=ctx.extra.get("conversation_relevance"),
         )
         debug_payload["rollout_flags"] = rollout_debug
+        _attach_runtime_debug(debug_payload, ctx)
         return AnswerOutput(
             decision="ESCALATE",
             answer=escalate_answer,
@@ -274,6 +306,7 @@ async def build_output(
                 conversation_relevance=ctx.extra.get("conversation_relevance"),
             )
             debug_payload["rollout_flags"] = rollout_debug
+            _attach_runtime_debug(debug_payload, ctx)
             return AnswerOutput(
                 decision=dr.decision,
                 answer=dr.answer,
@@ -332,6 +365,7 @@ async def build_output(
             conversation_relevance=ctx.extra.get("conversation_relevance"),
         )
         debug_payload["rollout_flags"] = rollout_debug
+        _attach_runtime_debug(debug_payload, ctx)
         return AnswerOutput(
             decision="ASK_USER",
             answer=default_answer,
@@ -350,4 +384,5 @@ async def build_output(
         debug={"trace_id": ctx.trace_id, "stage_reasons": ctx.stage_reasons, "termination_reason": ctx.termination_reason},
     )
     out.debug["rollout_flags"] = rollout_debug
+    _attach_runtime_debug(out.debug, ctx)
     return out

@@ -1,6 +1,22 @@
 import { useEffect, useState } from 'react'
 import { admin, type ArchiConfig, type EmbeddingConfig, type LLMConfig } from '../api/client'
-import { Loader2, Cpu, Key, Link2, Save, RefreshCw, CheckCircle2, AlertCircle, Sparkles, FileText, Globe } from 'lucide-react'
+import {
+  Loader2,
+  Cpu,
+  Key,
+  Link2,
+  Save,
+  RefreshCw,
+  CheckCircle2,
+  AlertCircle,
+  Sparkles,
+  FileText,
+  Globe,
+  Zap,
+  ShieldCheck,
+  SlidersHorizontal,
+  ChevronDown,
+} from 'lucide-react'
 
 type LlmProviderPresetKey =
   | 'custom'
@@ -9,6 +25,120 @@ type LlmProviderPresetKey =
   | 'zhipu_glm'
   | 'moonshot_kimi'
   | 'siliconflow'
+
+type AnswerMode = 'fast' | 'balanced' | 'strict' | 'debug'
+
+type AnswerModePreset = {
+  label: string
+  shortLabel: string
+  description: string
+  icon: typeof Zap
+  flags: {
+    languageDetect: boolean
+    decisionRouterLlm: boolean
+    evidenceEvaluator: boolean
+    evidenceQualityUseLlm: boolean
+    evidenceQualityLlmV2: boolean
+    debugLlmCalls: boolean
+    selfCritic: boolean
+    finalPolish: boolean
+    docTypeClassifier: boolean
+    retrievalDocTypeUseLlm: boolean
+    pageKindFilterEnabled: boolean
+    llmTaskAwareRouting: boolean
+  }
+}
+
+const ANSWER_MODE_PRESETS: Record<AnswerMode, AnswerModePreset> = {
+  fast: {
+    label: '极速模式',
+    shortLabel: '极速',
+    description: '减少辅助 LLM 调用，优先降低等待时间。',
+    icon: Zap,
+    flags: {
+      languageDetect: true,
+      decisionRouterLlm: false,
+      evidenceEvaluator: false,
+      evidenceQualityUseLlm: false,
+      evidenceQualityLlmV2: false,
+      debugLlmCalls: false,
+      selfCritic: false,
+      finalPolish: false,
+      docTypeClassifier: false,
+      retrievalDocTypeUseLlm: false,
+      pageKindFilterEnabled: false,
+      llmTaskAwareRouting: true,
+    },
+  },
+  balanced: {
+    label: '平衡模式',
+    shortLabel: '平衡',
+    description: '推荐日常使用，保留必要校验，减少慢速辅助步骤。',
+    icon: SlidersHorizontal,
+    flags: {
+      languageDetect: true,
+      decisionRouterLlm: false,
+      evidenceEvaluator: false,
+      evidenceQualityUseLlm: false,
+      evidenceQualityLlmV2: false,
+      debugLlmCalls: false,
+      selfCritic: false,
+      finalPolish: false,
+      docTypeClassifier: false,
+      retrievalDocTypeUseLlm: false,
+      pageKindFilterEnabled: false,
+      llmTaskAwareRouting: true,
+    },
+  },
+  strict: {
+    label: '严谨模式',
+    shortLabel: '严谨',
+    description: '质量优先，适合退款、价格、条款等高风险问题。',
+    icon: ShieldCheck,
+    flags: {
+      languageDetect: true,
+      decisionRouterLlm: false,
+      evidenceEvaluator: false,
+      evidenceQualityUseLlm: true,
+      evidenceQualityLlmV2: true,
+      debugLlmCalls: false,
+      selfCritic: false,
+      finalPolish: false,
+      docTypeClassifier: false,
+      retrievalDocTypeUseLlm: false,
+      pageKindFilterEnabled: false,
+      llmTaskAwareRouting: true,
+    },
+  },
+  debug: {
+    label: '调试模式',
+    shortLabel: '调试',
+    description: '开发排查用，保留更多日志和 LLM 判断。',
+    icon: Sparkles,
+    flags: {
+      languageDetect: true,
+      decisionRouterLlm: true,
+      evidenceEvaluator: true,
+      evidenceQualityUseLlm: true,
+      evidenceQualityLlmV2: true,
+      debugLlmCalls: true,
+      selfCritic: false,
+      finalPolish: false,
+      docTypeClassifier: false,
+      retrievalDocTypeUseLlm: false,
+      pageKindFilterEnabled: false,
+      llmTaskAwareRouting: true,
+    },
+  },
+}
+
+function inferAnswerMode(flags: AnswerModePreset['flags']): AnswerMode {
+  const entries = Object.entries(ANSWER_MODE_PRESETS) as Array<[AnswerMode, AnswerModePreset]>
+  const matched = entries.find(([, preset]) =>
+    Object.entries(preset.flags).every(([key, value]) => flags[key as keyof AnswerModePreset['flags']] === value)
+  )
+  return matched?.[0] ?? 'debug'
+}
 
 const LLM_PROVIDER_PRESETS: Record<
   LlmProviderPresetKey,
@@ -95,6 +225,8 @@ export default function Settings() {
   const [refreshingConversationCache, setRefreshingConversationCache] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [answerMode, setAnswerMode] = useState<AnswerMode>('balanced')
+  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   const [llmModel, setLlmModel] = useState('')
   const [llmFallbackModel, setLlmFallbackModel] = useState('')
@@ -127,6 +259,55 @@ export default function Settings() {
   const [autoGenUrl, setAutoGenUrl] = useState('')
   const [autoGenLoading, setAutoGenLoading] = useState(false)
 
+  const syncArchiState = (archiData: ArchiConfig) => {
+    const flags = {
+      languageDetect: archiData.language_detect_enabled,
+      decisionRouterLlm: archiData.decision_router_use_llm,
+      evidenceEvaluator: archiData.evidence_evaluator_enabled,
+      evidenceQualityUseLlm: archiData.evidence_quality_use_llm ?? true,
+      evidenceQualityLlmV2: archiData.evidence_quality_llm_v2 ?? false,
+      debugLlmCalls: archiData.debug_llm_calls ?? false,
+      selfCritic: archiData.self_critic_enabled,
+      finalPolish: archiData.final_polish_enabled,
+      docTypeClassifier: archiData.doc_type_classifier_enabled ?? false,
+      retrievalDocTypeUseLlm: archiData.retrieval_doc_type_use_llm ?? false,
+      pageKindFilterEnabled: archiData.page_kind_filter_enabled ?? false,
+      llmTaskAwareRouting: archiData.llm_task_aware_routing_enabled ?? true,
+    }
+    setArchiConfig(archiData)
+    setLanguageDetect(flags.languageDetect)
+    setDecisionRouterLlm(flags.decisionRouterLlm)
+    setEvidenceEvaluator(flags.evidenceEvaluator)
+    setEvidenceQualityUseLlm(flags.evidenceQualityUseLlm)
+    setEvidenceQualityLlmV2(flags.evidenceQualityLlmV2)
+    setDebugLlmCalls(flags.debugLlmCalls)
+    setSelfCritic(flags.selfCritic)
+    setFinalPolish(flags.finalPolish)
+    setDocTypeClassifier(flags.docTypeClassifier)
+    setRetrievalDocTypeUseLlm(flags.retrievalDocTypeUseLlm)
+    setPageKindFilterEnabled(flags.pageKindFilterEnabled)
+    setLlmModelEconomy(archiData.llm_model_economy ?? 'gpt-4o-mini')
+    setLlmTaskAwareRouting(flags.llmTaskAwareRouting)
+    setAnswerMode(inferAnswerMode(flags))
+  }
+
+  const applyAnswerMode = (mode: AnswerMode) => {
+    const flags = ANSWER_MODE_PRESETS[mode].flags
+    setAnswerMode(mode)
+    setLanguageDetect(flags.languageDetect)
+    setDecisionRouterLlm(flags.decisionRouterLlm)
+    setEvidenceEvaluator(flags.evidenceEvaluator)
+    setEvidenceQualityUseLlm(flags.evidenceQualityUseLlm)
+    setEvidenceQualityLlmV2(flags.evidenceQualityLlmV2)
+    setDebugLlmCalls(flags.debugLlmCalls)
+    setSelfCritic(flags.selfCritic)
+    setFinalPolish(flags.finalPolish)
+    setDocTypeClassifier(flags.docTypeClassifier)
+    setRetrievalDocTypeUseLlm(flags.retrievalDocTypeUseLlm)
+    setPageKindFilterEnabled(flags.pageKindFilterEnabled)
+    setLlmTaskAwareRouting(flags.llmTaskAwareRouting)
+  }
+
   useEffect(() => {
     Promise.all([admin.getLLMConfig(), admin.getEmbeddingConfig(), admin.getArchiConfig(), admin.getSystemPrompt()])
       .then(([llmData, embeddingData, archiData, promptData]) => {
@@ -142,20 +323,7 @@ export default function Settings() {
         setEmbeddingDimensions(embeddingData.embedding_dimensions)
         setEmbeddingApiKey(embeddingData.embedding_api_key)
         setEmbeddingBaseUrl(embeddingData.embedding_base_url)
-        setArchiConfig(archiData)
-        setLanguageDetect(archiData.language_detect_enabled)
-        setDecisionRouterLlm(archiData.decision_router_use_llm)
-        setEvidenceEvaluator(archiData.evidence_evaluator_enabled)
-        setEvidenceQualityUseLlm(archiData.evidence_quality_use_llm ?? true)
-        setEvidenceQualityLlmV2(archiData.evidence_quality_llm_v2 ?? false)
-        setDebugLlmCalls(archiData.debug_llm_calls ?? false)
-        setSelfCritic(archiData.self_critic_enabled)
-        setFinalPolish(archiData.final_polish_enabled)
-        setDocTypeClassifier(archiData.doc_type_classifier_enabled ?? false)
-        setRetrievalDocTypeUseLlm(archiData.retrieval_doc_type_use_llm ?? false)
-        setPageKindFilterEnabled(archiData.page_kind_filter_enabled ?? false)
-        setLlmModelEconomy(archiData.llm_model_economy ?? 'gpt-4o-mini')
-        setLlmTaskAwareRouting(archiData.llm_task_aware_routing_enabled ?? true)
+        syncArchiState(archiData)
         setSystemPrompt(promptData.value)
       })
       .catch((e) => setError(e instanceof Error ? e.message : '加载配置失败'))
@@ -241,20 +409,7 @@ export default function Settings() {
       setEmbeddingDimensions(embeddingData.embedding_dimensions)
       setEmbeddingApiKey(embeddingData.embedding_api_key)
       setEmbeddingBaseUrl(embeddingData.embedding_base_url)
-      setArchiConfig(archiData)
-      setLanguageDetect(archiData.language_detect_enabled)
-      setDecisionRouterLlm(archiData.decision_router_use_llm)
-      setEvidenceEvaluator(archiData.evidence_evaluator_enabled)
-      setEvidenceQualityUseLlm(archiData.evidence_quality_use_llm ?? false)
-      setEvidenceQualityLlmV2(archiData.evidence_quality_llm_v2 ?? false)
-      setDebugLlmCalls(archiData.debug_llm_calls ?? false)
-      setSelfCritic(archiData.self_critic_enabled)
-      setFinalPolish(archiData.final_polish_enabled)
-      setDocTypeClassifier(archiData.doc_type_classifier_enabled ?? false)
-      setRetrievalDocTypeUseLlm(archiData.retrieval_doc_type_use_llm ?? false)
-      setPageKindFilterEnabled(archiData.page_kind_filter_enabled ?? false)
-      setLlmModelEconomy(archiData.llm_model_economy ?? 'gpt-4o-mini')
-      setLlmTaskAwareRouting(archiData.llm_task_aware_routing_enabled ?? true)
+      syncArchiState(archiData)
       setSystemPrompt(promptData.value)
       setSuccess('已从数据库刷新缓存。')
     } catch (e) {
@@ -306,20 +461,7 @@ export default function Settings() {
       })
       setSuccess('Archi v3 配置已保存。')
       const data = await admin.getArchiConfig()
-      setArchiConfig(data)
-      setLanguageDetect(data.language_detect_enabled)
-      setDecisionRouterLlm(data.decision_router_use_llm)
-      setEvidenceEvaluator(data.evidence_evaluator_enabled)
-      setEvidenceQualityUseLlm(data.evidence_quality_use_llm ?? false)
-      setEvidenceQualityLlmV2(data.evidence_quality_llm_v2 ?? false)
-      setDebugLlmCalls(data.debug_llm_calls ?? false)
-      setSelfCritic(data.self_critic_enabled)
-      setFinalPolish(data.final_polish_enabled)
-      setDocTypeClassifier(data.doc_type_classifier_enabled ?? false)
-      setRetrievalDocTypeUseLlm(data.retrieval_doc_type_use_llm ?? false)
-      setPageKindFilterEnabled(data.page_kind_filter_enabled ?? false)
-      setLlmModelEconomy(data.llm_model_economy ?? 'gpt-4o-mini')
-      setLlmTaskAwareRouting(data.llm_task_aware_routing_enabled ?? true)
+      syncArchiState(data)
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存 Archi 配置失败')
     } finally {
@@ -711,95 +853,144 @@ export default function Settings() {
           <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
             <Sparkles size={15} className="text-violet-400" />
           </div>
-          Archi v3
+          回答流程
         </h2>
         <p className="text-sm text-zinc-400 mb-5">
-          配置语言检测、证据评估、自我检查、最终润色和 LLM 决策路由等功能开关。优先使用数据库配置，缺省时回退到环境变量。
+          选择日常回答策略。推荐使用平衡模式；需要排查问题时再展开高级设置。
         </p>
         <form onSubmit={handleSaveArchi} className="space-y-4">
-          <ToggleRow
-            label="语言检测"
-            description="检测输入语言（非 LLM）"
-            checked={languageDetect}
-            onChange={setLanguageDetect}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="LLM 决策路由"
-            description="使用 LLM 处理灰区决策（混合模式）"
-            checked={decisionRouterLlm}
-            onChange={setDecisionRouterLlm}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="证据评估器"
-            description="由 LLM 评估证据相关性，并为重试规划器提供建议"
-            checked={evidenceEvaluator}
-            onChange={setEvidenceEvaluator}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="证据质量（LLM）"
-            description="使用 LLM 进行证据质量判断，而不是正则规则"
-            checked={evidenceQualityUseLlm}
-            onChange={setEvidenceQualityUseLlm}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="证据质量（LLM v2）"
-            description="单次通过/失败判断，不输出特征分数。开启后覆盖 LLM v1。"
-            checked={evidenceQualityLlmV2}
-            onChange={setEvidenceQualityLlmV2}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="调试 LLM 调用"
-            description="在流程调试中记录每次 LLM 调用的完整提示词和响应（normalizer、evidence_quality、generate 等）"
-            checked={debugLlmCalls}
-            onChange={setDebugLlmCalls}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="自我检查"
-            description="自我检查失败时重新生成答案"
-            checked={selfCritic}
-            onChange={setSelfCritic}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="最终润色"
-            description="使用 LLM 优化清晰度、结构和语气"
-            checked={finalPolish}
-            onChange={setFinalPolish}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="文档类型分类器"
-            description="根据内容而不是 URL，使用 LLM 分类抓取文档（政策、服务条款、常见问题、操作指南、价格方案）"
-            checked={docTypeClassifier}
-            onChange={setDocTypeClassifier}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="检索文档类型（LLM）"
-            description="根据查询语义使用 LLM 选择要检索的文档类型（政策、常见问题、价格方案等）"
-            checked={retrievalDocTypeUseLlm}
-            onChange={setRetrievalDocTypeUseLlm}
-            disabled={savingArchi}
-          />
-          <ToggleRow
-            label="页面类型筛选"
-            description="按 page_kind（howto、faq 等）筛选检索结果。分块缺少 page_kind 时关闭，重新入库后再开启。"
-            checked={pageKindFilterEnabled}
-            onChange={setPageKindFilterEnabled}
-            disabled={savingArchi}
-          />
-          <div className="pt-2 border-t border-white/[0.06] mt-2">
-            <div className="text-sm font-medium text-zinc-300 mb-2">模型路由</div>
-            <div className="space-y-3">
+          <div>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div>
+                <div className="text-sm font-medium text-white">回答模式</div>
+                <div className="text-xs text-zinc-500 mt-0.5">选择后点击保存才会生效。</div>
+              </div>
+              <span className="text-xs px-2.5 py-1 rounded-lg bg-violet-500/10 text-violet-200 border border-violet-500/20">
+                当前：{ANSWER_MODE_PRESETS[answerMode].label}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {(Object.entries(ANSWER_MODE_PRESETS) as Array<[AnswerMode, AnswerModePreset]>).map(([mode, preset]) => {
+                const Icon = preset.icon
+                const active = answerMode === mode
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => applyAnswerMode(mode)}
+                    disabled={savingArchi}
+                    className={`text-left px-3 py-3 rounded-lg border transition-colors ${
+                      active
+                        ? 'border-violet-400/70 bg-violet-500/15 text-white'
+                        : 'border-white/[0.08] bg-white/[0.03] text-zinc-300 hover:border-white/[0.16] hover:bg-white/[0.06]'
+                    } ${savingArchi ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Icon size={15} className={active ? 'text-violet-200' : 'text-zinc-500'} />
+                      {preset.shortLabel}
+                    </div>
+                    <div className="text-xs text-zinc-500 mt-1 leading-relaxed">{preset.description}</div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className="w-full flex items-center justify-between gap-3 py-3 border-t border-white/[0.06] text-sm text-zinc-300 hover:text-white transition-colors"
+            aria-expanded={advancedOpen}
+          >
+            <span className="flex items-center gap-2">
+              <SlidersHorizontal size={15} className="text-zinc-500" />
+              高级设置
+            </span>
+            <ChevronDown size={16} className={`text-zinc-500 transition-transform ${advancedOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {advancedOpen && (
+            <div className="space-y-4">
               <ToggleRow
-                label="任务感知路由"
-                description="生成和自我检查使用主模型（gpt-5.2），normalizer、decision_router 等使用经济模型。"
+                label="语言识别"
+                description="自动识别用户输入语言，不调用 LLM。"
+                checked={languageDetect}
+                onChange={setLanguageDetect}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="问题理解增强"
+                description="用 LLM 参与灰区决策，可能增加响应时间。"
+                checked={decisionRouterLlm}
+                onChange={setDecisionRouterLlm}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="证据相关性评估"
+                description="用 LLM 判断检索证据是否相关，并给重试提供建议。"
+                checked={evidenceEvaluator}
+                onChange={setEvidenceEvaluator}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="证据可靠性检查"
+                description="用 LLM 判断证据质量。关闭后使用规则检查，速度更快。"
+                checked={evidenceQualityUseLlm}
+                onChange={setEvidenceQualityUseLlm}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="证据可靠性快速判定"
+                description="用单次通过/失败判断替代详细评分。开启后覆盖上面的详细判断。"
+                checked={evidenceQualityLlmV2}
+                onChange={setEvidenceQualityLlmV2}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="记录完整 LLM 调用"
+                description="保存每次 LLM 的完整提示词和响应，仅建议排查问题时开启。"
+                checked={debugLlmCalls}
+                onChange={setDebugLlmCalls}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="生成后自检"
+                description="答案自检失败时重新生成，质量更稳但更慢。"
+                checked={selfCritic}
+                onChange={setSelfCritic}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="答案润色"
+                description="用 LLM 优化表达清晰度、结构和语气。"
+                checked={finalPolish}
+                onChange={setFinalPolish}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="入库文档自动分类"
+                description="抓取或上传文档时，用 LLM 判断文档类型。"
+                checked={docTypeClassifier}
+                onChange={setDocTypeClassifier}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="检索范围智能选择"
+                description="根据问题语义用 LLM 选择要检索的文档类型。"
+                checked={retrievalDocTypeUseLlm}
+                onChange={setRetrievalDocTypeUseLlm}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="按页面类型过滤"
+                description="按 howto、faq 等 page_kind 筛选结果；分块缺少 page_kind 时建议关闭。"
+                checked={pageKindFilterEnabled}
+                onChange={setPageKindFilterEnabled}
+                disabled={savingArchi}
+              />
+              <ToggleRow
+                label="模型自动分工"
+                description="生成用主模型，理解、评估、润色等辅助任务用经济模型。"
                 checked={llmTaskAwareRouting}
                 onChange={setLlmTaskAwareRouting}
                 disabled={savingArchi}
@@ -814,10 +1005,10 @@ export default function Settings() {
                   className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
                   disabled={savingArchi}
                 />
-                <p className="text-xs text-zinc-500 mt-1">用于 normalizer、decision_router、evidence_evaluator、evidence_quality、final_polish</p>
+                <p className="text-xs text-zinc-500 mt-1">用于问题理解、证据评估、证据质量、答案润色等辅助任务。</p>
               </div>
             </div>
-          </div>
+          )}
           <button
             type="submit"
             disabled={savingArchi}
@@ -827,7 +1018,7 @@ export default function Settings() {
             }}
           >
             {savingArchi ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-            保存 Archi
+            保存回答流程
           </button>
         </form>
       </section>

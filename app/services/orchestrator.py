@@ -12,6 +12,7 @@ the next action.
 
 from dataclasses import dataclass, field
 from enum import Enum
+import time
 from typing import Any, Protocol, runtime_checkable
 
 from app.core.config import get_settings
@@ -166,6 +167,37 @@ def _reviewer_status_to_str(reviewer_result: Any) -> str | None:
 
 
 _VERIFY_REPAIR_RETRY_REASONS = {"type_mismatch", "overclaim", "unsupported_exact"}
+_TIMED_ACTIONS = {
+    OrchestratorAction.RETRIEVE: "retrieve",
+    OrchestratorAction.ASSESS_EVIDENCE: "assess_evidence",
+    OrchestratorAction.GENERATE: "generate",
+    OrchestratorAction.VERIFY: "verify",
+}
+
+
+def _record_phase_timing(ctx: OrchestratorContext, key: str, elapsed_seconds: float) -> None:
+    timings = ctx.extra.setdefault("phase_timings", {})
+    try:
+        current = float(timings.get(key, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        current = 0.0
+    timings[key] = current + max(0.0, elapsed_seconds)
+
+
+def _extract_rerank_timing(result: PhaseResult) -> float:
+    pack = result.evidence_pack
+    stats = getattr(pack, "retrieval_stats", None) if pack else None
+    if not isinstance(stats, dict):
+        return 0.0
+    timings = stats.get("timings")
+    if isinstance(timings, dict):
+        value = timings.get("rerank")
+    else:
+        value = stats.get("rerank_seconds")
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class Orchestrator:
@@ -445,6 +477,8 @@ class Orchestrator:
             if action == OrchestratorAction.RETRY_RETRIEVE:
                 self._apply_result(ctx, action, PhaseResult())
             else:
+                phase_started = time.perf_counter()
+                timing_key = _TIMED_ACTIONS.get(action)
                 try:
                     try:
                         from app.services.flow_debug import _pipeline_log
@@ -453,9 +487,23 @@ class Orchestrator:
                         pass
                     result = await handlers.execute(ctx, action)
                 except Exception as e:
+                    if timing_key:
+                        _record_phase_timing(
+                            ctx,
+                            timing_key,
+                            time.perf_counter() - phase_started,
+                        )
                     logger.error("orchestrator_execute_failed", action=action.value, error=str(e))
                     ctx.extra["error"] = str(e)
                     return await handlers.build_output(ctx, OrchestratorAction.ESCALATE)
+                if timing_key:
+                    _record_phase_timing(
+                        ctx,
+                        timing_key,
+                        time.perf_counter() - phase_started,
+                    )
+                if action == OrchestratorAction.RETRIEVE:
+                    _record_phase_timing(ctx, "rerank", _extract_rerank_timing(result))
                 self._apply_result(ctx, action, result)
                 if action == OrchestratorAction.VERIFY and result.reviewer_result:
                     ctx._last_reviewer_result = result.reviewer_result

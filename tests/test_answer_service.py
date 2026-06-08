@@ -182,6 +182,31 @@ def test_apply_answer_plan_uses_router_followup_for_pass_partial_when_llm_omits_
     assert confidence == 0.6
 
 
+def test_empty_llm_parse_fallback_stays_clarification_under_pass_partial_plan():
+    plan = build_answer_plan(
+        DecisionResult(
+            decision="PASS",
+            reason="partial_sufficient",
+            clarifying_questions=[],
+            partial_links=[],
+            answer_policy="bounded",
+            lane="PASS_PARTIAL",
+        ),
+        None,
+        None,
+    )
+
+    parsed = parse_llm_response("")
+    decision, answer, followup, confidence = apply_answer_plan(plan, parsed)
+
+    assert decision == "ASK_USER"
+    assert "one more detail" in answer.lower()
+    assert "trouble formatting" not in answer.lower()
+    assert "best we have" not in answer.lower()
+    assert followup == ["Could you provide more details about your question?"]
+    assert confidence == 0.0
+
+
 def test_render_calibrated_candidate_for_pass_exact():
     answer, followup = render_calibrated_candidate(
         {

@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1098,7 +1099,11 @@ class RetrievalService:
             )
 
         rerank_k = min(rerank_k, len(merged))
-        reranked = await self._reranker.rerank(effective_query, merged, rerank_k)
+        rerank_started = time.perf_counter()
+        try:
+            reranked = await self._reranker.rerank(effective_query, merged, rerank_k)
+        finally:
+            stats.setdefault("timings", {})["rerank"] = time.perf_counter() - rerank_started
 
         candidate_pool = self._build_candidate_pool(
             merged, bm25_ids, vector_ids, extra_ids, diversity_ids, stats, plan

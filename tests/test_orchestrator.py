@@ -348,3 +348,58 @@ async def test_run_terminates_on_ask_user():
     handlers = MockHandlers()
     out = await orch.run(ctx, handlers)
     assert out["decision"] == "ask_user"
+
+
+@pytest.mark.asyncio
+async def test_run_records_phase_timings_for_executed_actions():
+    """Run records timings without changing phase order or terminal output."""
+    from app.services.reviewer import ReviewerResult, ReviewerStatus
+
+    class MockHandlers:
+        async def execute(self, ctx, action):
+            if action == OrchestratorAction.UNDERSTAND:
+                return PhaseResult(effective_query="test")
+            if action == OrchestratorAction.RETRIEVE:
+                return PhaseResult(evidence=[{"id": "1"}])
+            if action == OrchestratorAction.ASSESS_EVIDENCE:
+                return PhaseResult(passes_quality_gate=True)
+            if action == OrchestratorAction.DECIDE:
+                return PhaseResult(
+                    decision_result=DecisionResult(
+                        decision="PASS",
+                        reason="sufficient",
+                        clarifying_questions=[],
+                        partial_links=[],
+                        lane="PASS_EXACT",
+                    )
+                )
+            if action == OrchestratorAction.GENERATE:
+                return PhaseResult(answer="answer", confidence=0.8)
+            if action == OrchestratorAction.VERIFY:
+                return PhaseResult(
+                    reviewer_result=ReviewerResult(
+                        status=ReviewerStatus.PASS,
+                        reasons=[],
+                        suggested_queries=[],
+                        missing_fields=[],
+                    )
+                )
+            raise NotImplementedError(action)
+
+        async def build_output(self, ctx, action):
+            return {
+                "decision": action.value,
+                "timings": ctx.extra.get("phase_timings", {}),
+            }
+
+    orch = Orchestrator()
+    ctx = OrchestratorContext(query="test", max_attempts=1)
+
+    out = await orch.run(ctx, MockHandlers())
+
+    assert out["decision"] == "done"
+    timings = out["timings"]
+    assert timings["retrieve"] >= 0.0
+    assert timings["assess_evidence"] >= 0.0
+    assert timings["generate"] >= 0.0
+    assert timings["verify"] >= 0.0

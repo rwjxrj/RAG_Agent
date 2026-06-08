@@ -520,6 +520,15 @@ class Settings(BaseSettings):
     self_critic_enabled: bool = Field(default=False, description="LLM self-critic after answer generation; regenerate on fail")
     self_critic_regenerate_max: int = Field(default=1, ge=0, le=2, description="Max regenerate attempts on self-critic fail")
 
+    # Generate reasoning prepass
+    generate_reasoning_enabled: bool = Field(
+        default=True,
+        description="Run an internal LLM reasoning prepass before final answer generation.",
+    )
+    generate_reasoning_max_chunks: int = Field(default=10, ge=1, le=20)
+    generate_reasoning_max_options: int = Field(default=5, ge=1, le=10)
+    generate_reasoning_max_tokens: int = Field(default=400, ge=64, le=1200)
+
     # Workstream 5: Claim-level review
     claim_level_review_enabled: bool = Field(
         default=True,
