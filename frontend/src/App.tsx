@@ -80,27 +80,28 @@ function App() {
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}
         style={{
-          background: 'linear-gradient(180deg, rgba(14,14,20,0.95) 0%, rgba(10,10,16,0.98) 100%)',
-          borderRight: '1px solid rgba(255,255,255,0.05)',
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(239,246,255,0.98) 100%)',
+          borderRight: '1px solid rgba(148,163,184,0.22)',
+          boxShadow: '12px 0 36px rgba(37,99,235,0.08)',
         }}
       >
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
           <div
-            className="absolute -top-20 -left-20 w-60 h-60 rounded-full opacity-30"
-            style={{ background: 'radial-gradient(circle, rgba(124,58,237,0.15) 0%, transparent 70%)' }}
+            className="absolute inset-x-0 top-0 h-36 opacity-60"
+            style={{ background: 'linear-gradient(180deg, rgba(219,234,254,0.72) 0%, transparent 100%)' }}
           />
           <div
-            className="absolute bottom-20 -right-10 w-40 h-40 rounded-full opacity-20"
-            style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.12) 0%, transparent 70%)' }}
+            className="absolute inset-x-0 bottom-0 h-28 opacity-50"
+            style={{ background: 'linear-gradient(0deg, rgba(224,242,254,0.72) 0%, transparent 100%)' }}
           />
         </div>
 
         <div className="relative flex items-center gap-3 px-5 h-[72px] shrink-0">
           <div
             className="w-9 h-9 rounded-xl flex items-center justify-center glow-sm"
-            style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)' }}
+            style={{ background: 'linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%)' }}
           >
-            <Bot size={18} className="text-white" />
+            <Bot size={18} style={{ color: '#fff' }} />
           </div>
           <div>
             <div className="font-semibold text-[14px] text-white leading-tight flex items-center gap-1.5">
@@ -111,7 +112,7 @@ function App() {
           </div>
         </div>
 
-        <div className="relative mx-4 h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
+        <div className="relative mx-4 h-px bg-gradient-to-r from-transparent via-sky-200 to-transparent" />
 
         <nav className="relative flex-1 px-3 py-5 space-y-0.5">
           {NAV_ITEMS.map((item) => {
@@ -135,14 +136,14 @@ function App() {
                     className="absolute inset-0 rounded-xl"
                     style={{
                       background: 'linear-gradient(135deg, rgba(124,58,237,0.15) 0%, rgba(59,130,246,0.08) 100%)',
-                      border: '1px solid rgba(124,58,237,0.2)',
+                      border: '1px solid rgba(37,99,235,0.18)',
                     }}
                   />
                 )}
                 {active && (
                   <div
                     className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full"
-                    style={{ background: 'linear-gradient(180deg, #7c3aed, #3b82f6)' }}
+                    style={{ background: 'linear-gradient(180deg, #2563eb, #0ea5e9)' }}
                   />
                 )}
                 <Icon size={17} strokeWidth={active ? 2 : 1.5} className="relative z-10" />
@@ -152,7 +153,7 @@ function App() {
           })}
         </nav>
 
-        <div className="relative mx-4 h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
+        <div className="relative mx-4 h-px bg-gradient-to-r from-transparent via-sky-200 to-transparent" />
         <div className="relative px-5 py-4 space-y-2">
           {user && (
             <div className="flex items-center justify-between gap-2">
@@ -181,9 +182,9 @@ function App() {
           <div className="ml-3 flex items-center gap-2">
             <div
               className="w-6 h-6 rounded-lg flex items-center justify-center"
-              style={{ background: 'linear-gradient(135deg, #7c3aed, #6d28d9)' }}
+              style={{ background: 'linear-gradient(135deg, #2563eb, #0ea5e9)' }}
             >
-              <Bot size={13} className="text-white" />
+              <Bot size={13} style={{ color: '#fff' }} />
             </div>
             <span className="font-semibold text-sm text-white">诡诡RAG搜索</span>
           </div>

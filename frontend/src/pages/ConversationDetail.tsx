@@ -145,10 +145,10 @@ export default function ConversationDetail() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-3rem)] lg:h-[calc(100vh-2rem)] animate-slide-up">
-      <header className="flex items-center gap-3 pb-4 mb-0 shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+      <header className="flex items-center gap-3 pb-4 mb-0 shrink-0" style={{ borderBottom: '1px solid rgba(148,163,184,0.22)' }}>
         <Link
           to="/"
-          className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.05] transition-colors"
+          className="p-2 rounded-xl text-zinc-500 hover:text-blue-700 hover:bg-sky-100 transition-colors"
         >
           <ArrowLeft size={18} />
         </Link>
@@ -189,7 +189,7 @@ export default function ConversationDetail() {
           <div className="flex items-start gap-3 animate-fade-in">
             <div
               className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5"
-              style={{ background: 'linear-gradient(135deg, rgba(124,58,237,0.2), rgba(59,130,246,0.15))' }}
+              style={{ background: 'linear-gradient(135deg, rgba(219,234,254,0.88), rgba(186,230,253,0.72))' }}
             >
               <Bot size={16} className="text-violet-400" />
             </div>
@@ -203,7 +203,7 @@ export default function ConversationDetail() {
           <div className="flex items-start gap-3 animate-fade-in">
             <div
               className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5"
-              style={{ background: 'linear-gradient(135deg, rgba(124,58,237,0.2), rgba(59,130,246,0.15))' }}
+              style={{ background: 'linear-gradient(135deg, rgba(219,234,254,0.88), rgba(186,230,253,0.72))' }}
             >
               <Bot size={16} className="text-violet-400" />
             </div>
@@ -224,7 +224,7 @@ export default function ConversationDetail() {
 
       <form
         className="flex flex-col gap-2 pt-4 shrink-0"
-        style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}
+        style={{ borderTop: '1px solid rgba(148,163,184,0.22)' }}
         onSubmit={handleSend}
       >
         <div className="flex items-end gap-3">
@@ -272,7 +272,7 @@ function CopyableId({ id }: { id: string }) {
     <button
       onClick={copy}
       className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-mono text-zinc-500
-                 bg-white/[0.03] hover:bg-white/[0.06] hover:text-violet-400 transition-colors"
+                 bg-sky-50 hover:bg-sky-100 hover:text-blue-700 transition-colors"
       title="复制 ID"
     >
       {id.slice(0, 8)}...
@@ -297,11 +297,11 @@ function MessageBubble({ message }: { message: Message }) {
       <div
         className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5"
         style={isUser
-          ? { background: 'linear-gradient(135deg, #7c3aed, #6d28d9)' }
-          : { background: 'linear-gradient(135deg, rgba(124,58,237,0.15), rgba(59,130,246,0.1))' }
+          ? { background: 'linear-gradient(135deg, #2563eb, #0ea5e9)' }
+          : { background: 'linear-gradient(135deg, rgba(219,234,254,0.9), rgba(186,230,253,0.72))' }
         }
       >
-        {isUser ? <User size={15} className="text-white" /> : <Bot size={15} className="text-violet-400" />}
+        {isUser ? <User size={15} style={{ color: '#fff' }} /> : <Bot size={15} className="text-violet-400" />}
       </div>
 
       <div className={`max-w-[80%] min-w-0 ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
@@ -312,7 +312,7 @@ function MessageBubble({ message }: { message: Message }) {
               : 'glass rounded-2xl rounded-tl-lg'
             }`}
           style={isUser
-            ? { background: 'linear-gradient(135deg, #7c3aed, #6d28d9)' }
+            ? { background: 'linear-gradient(135deg, #2563eb, #0ea5e9)', color: '#fff' }
             : undefined
           }
         >
@@ -357,14 +357,14 @@ function MessageBubble({ message }: { message: Message }) {
                 <ConfidenceBadge value={debug.confidence} />
               )}
               {debug.intent_cache && (
-                <span className="px-2.5 py-1 rounded-lg text-[11px] bg-white/[0.03] text-zinc-400 border border-white/[0.05]">
+                  <span className="px-2.5 py-1 rounded-lg text-[11px] bg-sky-50 text-zinc-400 border border-sky-100">
                   意图命中：{debug.intent_cache}
                 </span>
               )}
             </div>
             <button
               type="button"
-              className="inline-flex items-center gap-1.5 text-[11px] text-zinc-600 hover:text-zinc-400 transition-colors py-1"
+              className="inline-flex items-center gap-1.5 text-[11px] text-zinc-600 hover:text-blue-700 transition-colors py-1"
               onClick={() => setShowFlow((v) => !v)}
             >
               {showFlow ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -459,7 +459,7 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
 
       {debug.query_rewrite && (
         <DebugSection icon={<Search size={13} />} title="查询改写">
-          <div className="font-mono bg-black/20 p-3 rounded-xl space-y-1.5 text-zinc-400 text-[11px]">
+          <div className="font-mono bg-sky-50 p-3 rounded-xl space-y-1.5 text-zinc-400 text-[11px] border border-sky-100">
             <div>关键词：<span className="text-zinc-300">{debug.query_rewrite.keyword_query}</span></div>
             <div>语义查询：<span className="text-zinc-300">{debug.query_rewrite.semantic_query}</span></div>
           </div>
@@ -498,7 +498,7 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
         <DebugSection icon={<FileText size={13} />} title={`证据（${debug.evidence_summary.length} 个片段）`}>
           <div className="space-y-2">
             {debug.evidence_summary.map((e, i) => (
-              <div key={i} className="p-3 bg-black/20 rounded-xl">
+              <div key={i} className="p-3 bg-sky-50 rounded-xl border border-sky-100">
                 <div className="flex items-center gap-2 mb-1.5">
                   <a href={e.source_url} target="_blank" rel="noopener noreferrer" className="text-violet-400 hover:text-violet-300 text-xs">
                     {docTypeLabel(e.doc_type)} · {e.chunk_id.slice(0, 8)}
@@ -521,13 +521,13 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
           <div className="space-y-2.5">
             <div>
               <div className="text-zinc-600 mb-1">系统提示词（{debug.prompt_preview.system_length} 字符）</div>
-              <pre className="font-mono text-[11px] whitespace-pre-wrap break-words bg-black/20 p-3 rounded-xl text-zinc-500 max-h-96 overflow-y-auto">
+              <pre className="font-mono text-[11px] whitespace-pre-wrap break-words bg-sky-50 p-3 rounded-xl text-zinc-500 max-h-96 overflow-y-auto border border-sky-100">
                 {debug.prompt_preview.system_preview}
               </pre>
             </div>
             <div>
               <div className="text-zinc-600 mb-1">用户提示词（{debug.prompt_preview.user_length} 字符）</div>
-              <pre className="font-mono text-[11px] whitespace-pre-wrap break-words bg-black/20 p-3 rounded-xl text-zinc-500 max-h-96 overflow-y-auto">
+              <pre className="font-mono text-[11px] whitespace-pre-wrap break-words bg-sky-50 p-3 rounded-xl text-zinc-500 max-h-96 overflow-y-auto border border-sky-100">
                 {debug.prompt_preview.user_preview}
               </pre>
             </div>
@@ -625,7 +625,7 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
         <DebugSection icon={<Brain size={13} />} title="LLM 调用日志（提示词与响应）">
           <div className="space-y-4">
             {debug.llm_call_log.map((call, i) => (
-              <div key={i} className="p-3 bg-black/20 rounded-xl border border-white/[0.06]">
+              <div key={i} className="p-3 bg-sky-50 rounded-xl border border-sky-100">
                 <div className="flex items-center gap-2 mb-2 text-zinc-400">
                   <span className="font-medium text-violet-400">{call.task}</span>
                   <span className="text-[10px]">{call.model}</span>
@@ -636,14 +636,14 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
                   {call.messages?.map((m, j) => (
                     <div key={j}>
                       <div className="text-zinc-500 mb-0.5">{m.role}:</div>
-                      <pre className="whitespace-pre-wrap break-words text-zinc-400 max-h-48 overflow-y-auto p-2 rounded bg-black/30">
+                      <pre className="whitespace-pre-wrap break-words text-zinc-400 max-h-48 overflow-y-auto p-2 rounded bg-white border border-sky-100">
                         {m.content}
                       </pre>
                     </div>
                   ))}
                   <div>
                     <div className="text-zinc-500 mb-0.5">响应：</div>
-                    <pre className="whitespace-pre-wrap break-words text-zinc-300 max-h-48 overflow-y-auto p-2 rounded bg-black/30">
+                    <pre className="whitespace-pre-wrap break-words text-zinc-300 max-h-48 overflow-y-auto p-2 rounded bg-white border border-sky-100">
                       {call.response_content}
                     </pre>
                   </div>
@@ -678,7 +678,7 @@ function DebugSection({ icon, title, children }: { icon: React.ReactNode; title:
 
 function StatPill({ label, value }: { label: string; value?: string | number | null }) {
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-black/20 rounded-lg border border-white/[0.04]">
+    <div className="flex items-center gap-2 px-3 py-1.5 bg-sky-50 rounded-lg border border-sky-100">
       <span className="text-zinc-500">{label}</span>
       <span className="text-zinc-300 font-medium">{value ?? '-'}</span>
     </div>

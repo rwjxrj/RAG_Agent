@@ -143,25 +143,25 @@ export default function ApiTokens() {
         <div
           className="rounded-xl p-4 space-y-3"
           style={{
-            background: 'rgba(34,197,94,0.1)',
-            border: '1px solid rgba(34,197,94,0.3)',
+            background: 'rgba(240,253,244,0.9)',
+            border: '1px solid rgba(34,197,94,0.24)',
           }}
         >
-          <div className="font-medium text-green-400">令牌已创建，请立即复制。关闭后将不再显示。</div>
+          <div className="font-medium text-emerald-700">令牌已创建，请立即复制。关闭后将不再显示。</div>
           <div className="flex items-center gap-2 flex-wrap">
-            <code className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-black/30 text-green-300 text-sm font-mono truncate">
+            <code className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-white border border-emerald-200 text-emerald-700 text-sm font-mono truncate">
               {newToken.token}
             </code>
             <button
               onClick={copyToken}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm"
+              className="btn-ghost flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm"
             >
               {copied ? <Check size={16} /> : <Copy size={16} />}
               {copied ? '已复制' : '复制'}
             </button>
             <button
               onClick={exportToken}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm"
+              className="btn-ghost flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm"
             >
               导出
             </button>
@@ -175,13 +175,13 @@ export default function ApiTokens() {
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder="令牌名称（例如：CI/CD、集成）"
-          className="flex-1 px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+          className="flex-1 px-4 py-2 rounded-xl input-glass text-sm"
         />
         <button
           type="submit"
           disabled={creating || !newName.trim()}
           className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium text-white disabled:opacity-50"
-          style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)' }}
+          style={{ background: 'linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%)' }}
         >
           <Plus size={18} />
           {creating ? '创建中...' : '创建'}
@@ -195,8 +195,9 @@ export default function ApiTokens() {
       <div
         className="rounded-xl overflow-hidden"
         style={{
-          background: 'rgba(255,255,255,0.03)',
-          border: '1px solid rgba(255,255,255,0.06)',
+          background: 'rgba(255,255,255,0.82)',
+          border: '1px solid rgba(148,163,184,0.22)',
+          boxShadow: '0 18px 45px rgba(37,99,235,0.08)',
         }}
       >
         {loading ? (

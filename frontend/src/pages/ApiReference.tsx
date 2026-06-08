@@ -91,13 +91,14 @@ function EndpointCard({
     <div
       className="rounded-xl overflow-hidden"
       style={{
-        background: 'rgba(255,255,255,0.03)',
-        border: '1px solid rgba(255,255,255,0.06)',
+        background: 'rgba(255,255,255,0.82)',
+        border: '1px solid rgba(148,163,184,0.22)',
+        boxShadow: '0 14px 32px rgba(37,99,235,0.06)',
       }}
     >
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-3 px-4 py-3.5 text-left hover:bg-white/[0.02] transition-colors"
+        className="w-full flex items-center gap-3 px-4 py-3.5 text-left hover:bg-sky-50 transition-colors"
       >
         {open ? <ChevronDown size={18} className="text-zinc-500 shrink-0" /> : <ChevronRight size={18} className="text-zinc-500 shrink-0" />}
         <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase border ${methodColor}`}>
@@ -120,13 +121,13 @@ function EndpointCard({
                   <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">请求体</span>
                   <button
                     onClick={() => navigator.clipboard.writeText(formatJson(exampleRequest))}
-                    className="p-1 rounded text-zinc-500 hover:text-white hover:bg-white/5"
+                    className="p-1 rounded text-zinc-500 hover:text-blue-700 hover:bg-sky-100"
                     title="复制"
                   >
                     <Copy size={14} />
                   </button>
                 </div>
-                <pre className="p-3 rounded-lg bg-black/30 text-xs text-zinc-300 font-mono overflow-x-auto max-h-48 overflow-y-auto">
+                <pre className="p-3 rounded-lg bg-sky-50 border border-sky-100 text-xs text-zinc-300 font-mono overflow-x-auto max-h-48 overflow-y-auto">
                   {formatJson(exampleRequest)}
                 </pre>
               </div>
@@ -137,13 +138,13 @@ function EndpointCard({
                   <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">响应（200）</span>
                   <button
                     onClick={() => navigator.clipboard.writeText(formatJson(successResponse))}
-                    className="p-1 rounded text-zinc-500 hover:text-white hover:bg-white/5"
+                    className="p-1 rounded text-zinc-500 hover:text-blue-700 hover:bg-sky-100"
                     title="复制"
                   >
                     <Copy size={14} />
                   </button>
                 </div>
-                <pre className="p-3 rounded-lg bg-black/30 text-xs text-zinc-300 font-mono overflow-x-auto max-h-48 overflow-y-auto">
+                <pre className="p-3 rounded-lg bg-sky-50 border border-sky-100 text-xs text-zinc-300 font-mono overflow-x-auto max-h-48 overflow-y-auto">
                   {formatJson(successResponse)}
                 </pre>
               </div>

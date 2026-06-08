@@ -29,16 +29,16 @@ export default function Login() {
     <div
       className="min-h-screen flex items-center justify-center p-4"
       style={{
-        background: 'linear-gradient(180deg, rgba(14,14,20,0.98) 0%, rgba(10,10,16,1) 100%)',
+        background: 'linear-gradient(180deg, #f8fbff 0%, #eef6ff 100%)',
       }}
     >
       <div className="w-full max-w-sm">
         <div className="flex items-center justify-center gap-3 mb-8">
           <div
             className="w-12 h-12 rounded-xl flex items-center justify-center"
-            style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)' }}
+            style={{ background: 'linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%)' }}
           >
-            <Bot size={24} className="text-white" />
+            <Bot size={24} style={{ color: '#fff' }} />
           </div>
           <div>
             <div className="font-semibold text-lg text-white flex items-center gap-1.5">
@@ -53,8 +53,9 @@ export default function Login() {
           onSubmit={handleSubmit}
           className="rounded-2xl p-6 space-y-4"
           style={{
-            background: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(255,255,255,0.06)',
+            background: 'rgba(255,255,255,0.88)',
+            border: '1px solid rgba(148,163,184,0.22)',
+            boxShadow: '0 22px 55px rgba(37,99,235,0.12)',
           }}
         >
           <div>
@@ -63,7 +64,7 @@ export default function Login() {
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               placeholder="admin"
               required
               autoComplete="username"
@@ -75,7 +76,7 @@ export default function Login() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               placeholder="••••••••"
               required
               autoComplete="current-password"
@@ -89,7 +90,8 @@ export default function Login() {
             disabled={loading}
             className="w-full py-2.5 rounded-xl font-medium text-white transition-all disabled:opacity-50"
             style={{
-              background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+              background: 'linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%)',
+              color: '#fff',
             }}
           >
             {loading ? '登录中...' : '登录'}

@@ -160,12 +160,12 @@ export default function DocumentList() {
 
   return (
     <div className="space-y-6 animate-slide-up">
-      <header className="relative overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(12,20,33,0.95),rgba(10,14,24,0.92))] shadow-[0_24px_70px_rgba(0,0,0,0.35)]">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(6,182,212,0.16),transparent_36%),radial-gradient(circle_at_left,rgba(59,130,246,0.12),transparent_30%)]" />
+      <header className="relative overflow-hidden rounded-[28px] border border-sky-100 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(239,246,255,0.9))] shadow-[0_22px_55px_rgba(37,99,235,0.1)]">
+        <div className="absolute inset-x-0 top-0 h-32 bg-[linear-gradient(180deg,rgba(219,234,254,0.72),transparent)]" />
         <div className="relative p-6 lg:p-7">
           <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
             <div className="max-w-3xl">
-              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/8 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan-300">
+              <div className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-blue-700">
                 <Database size={12} />
                 知识库
               </div>
@@ -176,7 +176,7 @@ export default function DocumentList() {
             </div>
 
             <div className="grid w-full gap-3 sm:grid-cols-2 xl:w-auto xl:min-w-[460px]">
-              <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4 backdrop-blur-md">
+              <div className="rounded-2xl border border-sky-100 bg-white/70 p-4 backdrop-blur-md">
                 <div className="flex items-center justify-between text-xs uppercase tracking-[0.2em] text-zinc-500">
                   <span>文档总数</span>
                   <FileText size={14} className="text-cyan-300" />
@@ -184,7 +184,7 @@ export default function DocumentList() {
                 <div className="mt-3 text-3xl font-semibold tracking-tight text-white">{total.toLocaleString()}</div>
                 <div className="mt-1 text-xs text-zinc-500">覆盖所有已索引来源</div>
               </div>
-              <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4 backdrop-blur-md">
+              <div className="rounded-2xl border border-sky-100 bg-white/70 p-4 backdrop-blur-md">
                 <div className="flex items-center justify-between text-xs uppercase tracking-[0.2em] text-zinc-500">
                   <span>当前页展示</span>
                   <Layers size={14} className="text-emerald-300" />
@@ -192,7 +192,7 @@ export default function DocumentList() {
                 <div className="mt-3 text-3xl font-semibold tracking-tight text-white">{items.length}</div>
                 <div className="mt-1 text-xs text-zinc-500">当前视图包含 {visibleChunks.toLocaleString()} 个分块</div>
               </div>
-              <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4 backdrop-blur-md">
+              <div className="rounded-2xl border border-sky-100 bg-white/70 p-4 backdrop-blur-md">
                 <div className="flex items-center justify-between text-xs uppercase tracking-[0.2em] text-zinc-500">
                   <span>HTTP 来源</span>
                   <Globe size={14} className="text-blue-300" />
@@ -200,7 +200,7 @@ export default function DocumentList() {
                 <div className="mt-3 text-3xl font-semibold tracking-tight text-white">{crawlableCount}</div>
                 <div className="mt-1 text-xs text-zinc-500">当前可重新抓取</div>
               </div>
-              <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4 backdrop-blur-md">
+              <div className="rounded-2xl border border-sky-100 bg-white/70 p-4 backdrop-blur-md">
                 <div className="flex items-center justify-between text-xs uppercase tracking-[0.2em] text-zinc-500">
                   <span>筛选条件</span>
                   <Filter size={14} className="text-amber-300" />

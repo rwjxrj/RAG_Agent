@@ -12,14 +12,6 @@ import {
   Sparkles,
 } from 'lucide-react'
 
-const METRIC_ICONS: Record<string, typeof Activity> = {
-  requests: Activity,
-  messages: MessageSquare,
-  latency: Clock,
-  tokens: Zap,
-  conversations: MessageSquare,
-}
-
 const CARD_STYLES = [
   { gradient: 'from-violet-500/15 via-violet-500/5 to-transparent', glow: 'rgba(124,58,237,0.12)', iconColor: 'text-violet-400', borderColor: 'rgba(124,58,237,0.15)' },
   { gradient: 'from-emerald-500/15 via-emerald-500/5 to-transparent', glow: 'rgba(16,185,129,0.12)', iconColor: 'text-emerald-400', borderColor: 'rgba(16,185,129,0.15)' },
@@ -28,6 +20,15 @@ const CARD_STYLES = [
   { gradient: 'from-blue-500/15 via-blue-500/5 to-transparent', glow: 'rgba(59,130,246,0.12)', iconColor: 'text-blue-400', borderColor: 'rgba(59,130,246,0.15)' },
   { gradient: 'from-rose-500/15 via-rose-500/5 to-transparent', glow: 'rgba(244,63,94,0.12)', iconColor: 'text-rose-400', borderColor: 'rgba(244,63,94,0.15)' },
 ]
+
+type DashboardCard = {
+  key: string
+  label: string
+  value: number
+  hint: string
+  icon: typeof Activity
+  valueType?: 'number' | 'currency'
+}
 
 export default function Dashboard() {
   const [metrics, setMetrics] = useState<Record<string, number>>({})
@@ -54,7 +55,7 @@ export default function Dashboard() {
     load()
   }, [])
 
-  const entries = Object.entries(metrics).filter(([k]) => k.startsWith('support_ai_'))
+  const cards = buildDashboardCards(metrics)
 
   if (loading) return (
       <div className="flex items-center justify-center gap-3 py-24 animate-fade-in">
@@ -63,7 +64,7 @@ export default function Dashboard() {
     </div>
   )
 
-  if (error && entries.length === 0) return (
+  if (error && cards.length === 0) return (
     <div className="animate-fade-in">
       <div className="p-3.5 rounded-xl mb-5 bg-danger/10 border border-danger/20 text-red-300 text-sm">{error}</div>
     </div>
@@ -92,7 +93,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {entries.length === 0 ? (
+      {cards.length === 0 ? (
         <div className="flex flex-col items-center py-24 text-zinc-500">
           <div className="w-16 h-16 rounded-2xl glass-accent flex items-center justify-center mb-5 glow-sm">
             <BarChart3 size={30} className="text-violet-400" />
@@ -102,20 +103,19 @@ export default function Dashboard() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-          {entries.map(([key, value], index) => {
-            const name = key.replace('support_ai_', '')
-            const iconKey = Object.keys(METRIC_ICONS).find((k) => name.toLowerCase().includes(k))
-            const Icon = iconKey ? METRIC_ICONS[iconKey] : TrendingUp
+          {cards.map((card, index) => {
+            const Icon = card.icon
             const style = CARD_STYLES[index % CARD_STYLES.length]
 
             return (
               <div
-                key={key}
+                key={card.key}
                 className={`relative overflow-hidden rounded-2xl p-5 transition-all duration-300 card-hover`}
                 style={{
-                  background: `linear-gradient(135deg, ${style.glow}, transparent 60%)`,
+                  background: `linear-gradient(135deg, ${style.glow}, rgba(255,255,255,0.86) 60%)`,
                   border: `1px solid ${style.borderColor}`,
                   backdropFilter: 'blur(12px)',
+                  boxShadow: '0 14px 32px rgba(37,99,235,0.08)',
                 }}
               >
                 <div className="absolute inset-0 dot-pattern opacity-30" />
@@ -123,17 +123,17 @@ export default function Dashboard() {
                   <div className="flex items-start justify-between mb-4">
                     <div
                       className={`w-10 h-10 rounded-xl flex items-center justify-center ${style.iconColor}`}
-                      style={{ background: 'rgba(0,0,0,0.3)' }}
+                      style={{ background: 'rgba(219,234,254,0.72)' }}
                     >
                       <Icon size={19} />
                     </div>
                     <Sparkles size={14} className="text-zinc-600" />
                   </div>
                   <div className="text-3xl font-bold tracking-tight text-white mb-1.5">
-                    {formatMetricValue(value)}
+                    {formatMetricValue(card.value, card.valueType)}
                   </div>
                   <div className="text-xs font-medium text-zinc-500">
-                    {formatMetricName(name)}
+                    {card.label} · {card.hint}
                   </div>
                 </div>
               </div>
@@ -145,23 +145,84 @@ export default function Dashboard() {
   )
 }
 
-function formatMetricValue(value: number): string {
+function buildDashboardCards(metrics: Record<string, number>): DashboardCard[] {
+  const cards: DashboardCard[] = [
+    {
+      key: 'llm_requests',
+      label: 'LLM 请求',
+      value: sumMetric(metrics, 'support_ai_llm_requests_total'),
+      hint: '所有模型调用汇总',
+      icon: Zap,
+    },
+    {
+      key: 'llm_input_tokens',
+      label: '输入 Token',
+      value: sumMetric(metrics, 'support_ai_llm_tokens_total', 'type=input'),
+      hint: '所有模型汇总',
+      icon: Activity,
+    },
+    {
+      key: 'llm_output_tokens',
+      label: '输出 Token',
+      value: sumMetric(metrics, 'support_ai_llm_tokens_total', 'type=output'),
+      hint: '所有模型汇总',
+      icon: Activity,
+    },
+    {
+      key: 'llm_cost',
+      label: 'LLM 成本',
+      value: sumMetric(metrics, 'support_ai_llm_cost_usd_total'),
+      hint: 'USD 估算',
+      icon: TrendingUp,
+      valueType: 'currency',
+    },
+    {
+      key: 'retrieval_requests',
+      label: '检索请求',
+      value: sumMetric(metrics, 'support_ai_retrieval_requests_total'),
+      hint: '知识库查询',
+      icon: BarChart3,
+    },
+    {
+      key: 'retrieval_hits',
+      label: '检索命中',
+      value: sumMetric(metrics, 'support_ai_retrieval_hits_total'),
+      hint: '返回证据片段',
+      icon: MessageSquare,
+    },
+    {
+      key: 'retrieval_misses',
+      label: '检索未命中',
+      value: sumMetric(metrics, 'support_ai_retrieval_misses_total'),
+      hint: '无证据结果',
+      icon: Clock,
+    },
+    {
+      key: 'api_requests',
+      label: 'API 请求',
+      value: sumMetric(metrics, 'support_ai_api_requests_total'),
+      hint: '全部接口汇总',
+      icon: Activity,
+    },
+  ]
+
+  return cards.filter((card) => card.value > 0)
+}
+
+function sumMetric(metrics: Record<string, number>, metricName: string, labelContains?: string): number {
+  return Object.entries(metrics).reduce((total, [key, value]) => {
+    const isMetric = key === metricName || key.startsWith(`${metricName}{`)
+    if (!isMetric) return total
+    if (labelContains && !key.includes(labelContains)) return total
+    return total + (Number.isFinite(value) ? value : 0)
+  }, 0)
+}
+
+function formatMetricValue(value: number, valueType: DashboardCard['valueType'] = 'number'): string {
+  if (valueType === 'currency') return `$${value.toFixed(value >= 1 ? 2 : 4)}`
   if (typeof value !== 'number') return String(value)
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
   if (Number.isInteger(value)) return value.toLocaleString()
   return value.toFixed(2)
-}
-
-function formatMetricName(name: string): string {
-  const labels: Record<string, string> = {
-    requests: '请求数',
-    messages: '消息数',
-    latency: '延迟',
-    tokens: 'Token 数',
-    conversations: '会话数',
-  }
-  const normalized = name.toLowerCase()
-  const matchedKey = Object.keys(labels).find((key) => normalized.includes(key))
-  return matchedKey ? labels[matchedKey] : name.replace(/_/g, ' ')
 }

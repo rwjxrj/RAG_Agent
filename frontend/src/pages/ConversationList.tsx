@@ -115,7 +115,7 @@ export default function ConversationList() {
               {items.map((c) => (
                 <tr
                   key={c.id}
-                  className="border-b border-white/[0.03] last:border-b-0 hover:bg-white/[0.02] transition-colors duration-200 cursor-pointer group"
+                  className="border-b border-white/[0.03] last:border-b-0 hover:bg-sky-50/80 transition-colors duration-200 cursor-pointer group"
                   onClick={() => navigate(`/conversations/${c.id}`)}
                 >
                   <td className="px-5 py-4">
@@ -137,7 +137,7 @@ export default function ConversationList() {
                     <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition-all duration-200">
                       <Link
                         to={`/conversations/${c.id}`}
-                        className="p-2 rounded-lg text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors"
+                        className="p-2 rounded-lg text-zinc-500 hover:text-blue-700 hover:bg-sky-100 transition-colors"
                         onClick={(e) => e.stopPropagation()}
                         title="查看"
                       >
@@ -166,7 +166,7 @@ export default function ConversationList() {
           </span>
           <div className="flex items-center gap-1">
             <button
-              className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.05] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              className="p-2 rounded-xl text-zinc-500 hover:text-blue-700 hover:bg-sky-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               disabled={page <= 1}
               onClick={() => setPage((p) => p - 1)}
             >
@@ -181,7 +181,7 @@ export default function ConversationList() {
                   className={`w-9 h-9 rounded-xl text-sm font-medium transition-all duration-200
                     ${p === page
                       ? 'btn-primary'
-                      : 'text-zinc-500 hover:text-white hover:bg-white/[0.05]'
+                      : 'text-zinc-500 hover:text-blue-700 hover:bg-sky-100'
                     }`}
                   onClick={() => setPage(p)}
                 >
@@ -190,7 +190,7 @@ export default function ConversationList() {
               )
             })}
             <button
-              className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.05] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              className="p-2 rounded-xl text-zinc-500 hover:text-blue-700 hover:bg-sky-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               disabled={page >= totalPages}
               onClick={() => setPage((p) => p + 1)}
             >
@@ -259,7 +259,7 @@ function CreateConversationModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
+    <div className="fixed inset-0 bg-slate-900/35 backdrop-blur-md flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
       <div
         className="glass rounded-2xl w-full max-w-[480px] shadow-2xl animate-slide-up gradient-border"
         onClick={(e) => e.stopPropagation()}
@@ -267,7 +267,7 @@ function CreateConversationModal({
         <div className="flex justify-between items-center px-6 py-5 border-b border-white/[0.04]">
           <h2 className="text-base font-semibold text-white">新建会话</h2>
           <button
-            className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors"
+            className="p-2 rounded-xl text-zinc-500 hover:text-blue-700 hover:bg-sky-100 transition-colors"
             onClick={onCancel}
             aria-label="关闭"
           >
