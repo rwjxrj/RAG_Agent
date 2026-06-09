@@ -1,5 +1,7 @@
 """Tests for answer service helpers."""
 
+import pytest
+
 from app.services.answer_utils import (
     apply_answer_plan,
     build_answer_plan,
@@ -8,9 +10,193 @@ from app.services.answer_utils import (
     render_calibrated_candidate,
     resolve_retrieval_query,
 )
+from app.services.agentic_router import AgenticRoute, AgenticRouterDecision
+from app.services.answer_service import AnswerService
 from app.services.evidence_quality import QualityReport
 from app.services.retry_planner import RetryStrategy
-from app.services.schemas import DecisionResult, QuerySpec
+from app.services.schemas import AnswerOutput, DecisionResult, QuerySpec
+
+
+class FakeRouter:
+    def __init__(self, decision):
+        self.decision = decision
+        self.calls = []
+
+    def route(self, payload):
+        self.calls.append(payload)
+        return self.decision
+
+
+class FakeOrchestrator:
+    def __init__(self, output: AnswerOutput | None = None):
+        self.output = output
+        self.calls = []
+
+    async def run(self, ctx, handlers):
+        self.calls.append(ctx)
+        if self.output is not None:
+            return self.output
+        return AnswerOutput(
+            decision="PASS",
+            answer="RAG answered.",
+            followup_questions=[],
+            citations=[],
+            confidence=0.7,
+            debug={},
+        )
+
+
+def make_answer_service(*, router, orchestrator: FakeOrchestrator | None = None) -> AnswerService:
+    return AnswerService(
+        retrieval=object(),
+        llm=object(),
+        reviewer=object(),
+        orchestrator=orchestrator or FakeOrchestrator(),
+        agentic_router=router,
+    )
+
+
+@pytest.mark.asyncio
+async def test_intent_cache_hit_skips_agentic_router(monkeypatch):
+    class MatchedIntent:
+        intent = "hello"
+        answer = "intent answer"
+
+    decision = AgenticRouterDecision(
+        route=AgenticRoute.RAG_SEARCH,
+        tool="rag_search",
+        reason="support_knowledge_question",
+        confidence=0.86,
+    )
+    router = FakeRouter(decision)
+    service = make_answer_service(router=router)
+    monkeypatch.setattr("app.services.answer_service.match_intent", lambda query: MatchedIntent())
+
+    output = await service.generate("你好", trace_id="trace-intent")
+
+    assert output.decision == "PASS"
+    assert output.answer == "intent answer"
+    assert router.calls == []
+    assert output.debug["intent_cache"] == "hello"
+    assert output.debug["agentic_router"] == {
+        "skipped": True,
+        "reason": "intent_cache_hit",
+    }
+
+
+@pytest.mark.asyncio
+async def test_direct_response_returns_pass_without_rag():
+    decision = AgenticRouterDecision(
+        route=AgenticRoute.DIRECT_RESPONSE,
+        tool="direct_response",
+        reason="greeting_or_capability",
+        confidence=0.88,
+    )
+    router = FakeRouter(decision)
+    orchestrator = FakeOrchestrator()
+    service = make_answer_service(router=router, orchestrator=orchestrator)
+
+    output = await service.generate("你好", trace_id="trace-router")
+
+    assert output.decision == "PASS"
+    assert output.citations == []
+    assert output.confidence == 0.88
+    assert output.debug["trace_id"] == "trace-router"
+    assert output.debug["agentic_router"]["route"] == "direct_response"
+    assert router.calls[0].source == "reply"
+    assert orchestrator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_clarify_returns_ask_user_with_followups():
+    decision = AgenticRouterDecision(
+        route=AgenticRoute.CLARIFY,
+        tool="clarify",
+        reason="missing_critical_conditions",
+        confidence=0.78,
+        clarifying_questions=["你需要哪个地区？"],
+    )
+    service = make_answer_service(router=FakeRouter(decision))
+
+    output = await service.generate("帮我推荐一个套餐")
+
+    assert output.decision == "ASK_USER"
+    assert output.followup_questions == ["你需要哪个地区？"]
+    assert output.citations == []
+    assert output.debug["agentic_router"]["route"] == "clarify"
+
+
+@pytest.mark.asyncio
+async def test_human_handoff_returns_escalate():
+    decision = AgenticRouterDecision(
+        route=AgenticRoute.HUMAN_HANDOFF,
+        tool="human_handoff",
+        reason="human_only_action",
+        confidence=0.9,
+        risk_flags=["account_or_billing_action"],
+    )
+    service = make_answer_service(router=FakeRouter(decision))
+
+    output = await service.generate("帮我退款")
+
+    assert output.decision == "ESCALATE"
+    assert output.citations == []
+    assert output.debug["agentic_router"]["route"] == "human_handoff"
+
+
+@pytest.mark.asyncio
+async def test_rag_route_preserves_existing_output_debug_and_citations():
+    decision = AgenticRouterDecision(
+        route=AgenticRoute.RAG_SEARCH,
+        tool="rag_search",
+        reason="support_knowledge_question",
+        confidence=0.86,
+    )
+    expected = AnswerOutput(
+        decision="PASS",
+        answer="Windows VPS starts at the cited plan.",
+        followup_questions=[],
+        citations=[{"chunk_id": "c1", "source_url": "https://example.com/windows"}],
+        confidence=0.7,
+        debug={"existing": True},
+    )
+    service = make_answer_service(
+        router=FakeRouter(decision),
+        orchestrator=FakeOrchestrator(output=expected),
+    )
+
+    output = await service.generate("Windows VPS 多少钱？")
+
+    assert output is expected
+    assert output.citations == [{"chunk_id": "c1", "source_url": "https://example.com/windows"}]
+    assert output.debug["existing"] is True
+    assert output.debug["agentic_router"]["route"] == "rag_search"
+
+
+@pytest.mark.asyncio
+async def test_router_exception_falls_back_to_rag():
+    class BrokenRouter:
+        def route(self, payload):
+            raise RuntimeError("boom")
+
+    expected = AnswerOutput(
+        decision="PASS",
+        answer="RAG still answered.",
+        followup_questions=[],
+        citations=[{"chunk_id": "c1", "source_url": "https://example.com"}],
+        confidence=0.6,
+        debug={},
+    )
+    service = make_answer_service(
+        router=BrokenRouter(),
+        orchestrator=FakeOrchestrator(output=expected),
+    )
+
+    output = await service.generate("VPS 怎么配置？")
+
+    assert output.answer == "RAG still answered."
+    assert output.debug["agentic_router"]["reason"] == "router_exception"
+    assert output.debug["agentic_router"]["fallback_to_rag"] is True
 
 
 def test_collect_rewrite_candidates_dedupes_case_insensitive():

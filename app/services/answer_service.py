@@ -9,6 +9,11 @@ import time
 from app.core.config import get_settings
 from app.services.flow_debug import _pipeline_log
 from app.core.logging import get_logger
+from app.services.agentic_router import (
+    AgenticRoute,
+    AgenticRouter,
+    AgenticRouterInput,
+)
 from app.services.branding_config import match_intent
 from app.services.llm_config import get_llm_fallback_model, get_llm_model
 from app.services.llm_gateway import LLMGateway, get_llm_gateway
@@ -68,11 +73,13 @@ class AnswerService:
         llm: LLMGateway | None = None,
         reviewer: ReviewerGate | None = None,
         orchestrator: Orchestrator | None = None,
+        agentic_router: AgenticRouter | None = None,
     ) -> None:
         self._settings = get_settings()
         self._retrieval = retrieval or RetrievalService()
         self._llm = llm or get_llm_gateway()
         self._reviewer = reviewer or ReviewerGate()
+        self._agentic_router = agentic_router or AgenticRouter()
         self._orchestrator = orchestrator or Orchestrator(
             primary_model=get_llm_model(),
             fallback_model=get_llm_fallback_model(),
@@ -114,7 +121,59 @@ class AnswerService:
                 followup_questions=[],
                 citations=[],
                 confidence=1.0,
-                debug={"trace_id": trace_id, "intent_cache": intent.intent},
+                debug={
+                    "trace_id": trace_id,
+                    "intent_cache": intent.intent,
+                    "agentic_router": {
+                        "skipped": True,
+                        "reason": "intent_cache_hit",
+                    },
+                },
+            ))
+
+        try:
+            agentic_decision = self._agentic_router.route(AgenticRouterInput(
+                query=query,
+                conversation_history=conversation_history or [],
+                source="reply",
+                trace_id=trace_id,
+            ))
+        except Exception:
+            agentic_decision = AgenticRouter.safe_fallback("router_exception")
+
+        agentic_debug = agentic_decision.to_debug()
+
+        if agentic_decision.route == AgenticRoute.DIRECT_RESPONSE:
+            app_name = (self._settings.app_name or "").strip()
+            answer = f"你好，欢迎使用 {app_name} 客服。有什么可以帮你？" if app_name else "你好，有什么可以帮你？"
+            return _finish(AnswerOutput(
+                decision="PASS",
+                answer=answer,
+                followup_questions=[],
+                citations=[],
+                confidence=agentic_decision.confidence,
+                debug={"trace_id": trace_id, "agentic_router": agentic_debug},
+            ))
+
+        if agentic_decision.route == AgenticRoute.CLARIFY:
+            followups = agentic_decision.clarifying_questions[:3] or ["请补充更多关键信息。"]
+            return _finish(AnswerOutput(
+                decision="ASK_USER",
+                answer="我还需要一点信息才能准确处理这个问题。",
+                followup_questions=followups,
+                citations=[],
+                confidence=agentic_decision.confidence,
+                debug={"trace_id": trace_id, "agentic_router": agentic_debug},
+            ))
+
+        if agentic_decision.route == AgenticRoute.HUMAN_HANDOFF:
+            return _finish(AnswerOutput(
+                decision="ESCALATE",
+                answer="这个请求需要人工客服处理，我会将问题转交给人工跟进。",
+                followup_questions=[],
+                citations=[],
+                confidence=agentic_decision.confidence,
+                debug={"trace_id": trace_id, "agentic_router": agentic_debug},
             ))
 
         query_extract_started = time.perf_counter()
@@ -199,6 +258,8 @@ class AnswerService:
         )
 
         output = await self._orchestrator.run(ctx, self)
+        output.debug = output.debug or {}
+        output.debug["agentic_router"] = agentic_debug
         return _finish(output, retry_count=ctx.retrieval_attempt)
 
     async def _execute_understand(self, ctx: OrchestratorContext) -> PhaseResult:

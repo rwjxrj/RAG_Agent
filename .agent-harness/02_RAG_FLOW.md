@@ -1,7 +1,7 @@
 # 02_RAG_FLOW.md
 
 ## 结论
-RAG 分两条主线：入库线把 source、URL、上传文件、WHMCS 工单转为 Document/Chunk，并写入 PostgreSQL、OpenSearch、Qdrant；查询线从 conversations 或 reply 进入 `AnswerService.generate()`，经 normalizer、`Orchestrator.run()`、`RetrievalService.retrieve()`、EvidenceSet、LLM、`ReviewerGate.review()` 输出答案和引用。
+RAG 分两条主线：入库线把 source、URL、上传文件、WHMCS 工单转为 Document/Chunk，并写入 PostgreSQL、OpenSearch、Qdrant；查询线从 conversations 或 reply 进入 `AnswerService.generate()`，先检查 intent cache，未命中后由轻量 `AgenticRouter` 判断是否直接回复、追问、转人工或进入 RAG。进入 RAG 时仍经 normalizer、`Orchestrator.run()`、`RetrievalService.retrieve()`、EvidenceSet、LLM、`ReviewerGate.review()` 输出答案和引用。
 
 ## 入库流程
 
@@ -108,8 +108,12 @@ flowchart TD
   D --> E
   E --> F["AnswerService.generate"]
   F --> G{"intent cache 命中?"}
-  G -->|是| H["直接返回预设答案"]
-  G -->|否| I["语言识别 + normalizer -> QuerySpec"]
+  G -->|是| H["直接返回预设答案，debug 标记 Router skipped"]
+  G -->|否| AR["AgenticRouter pre-RAG 工具选择"]
+  AR -->|direct_response| AR1["PASS，无 citations"]
+  AR -->|clarify| AR2["ASK_USER，返回追问"]
+  AR -->|human_handoff| AR3["ESCALATE，转人工"]
+  AR -->|rag_search/低置信/异常| I["语言识别 + normalizer -> QuerySpec"]
   I --> J{"skip_retrieval?"}
   J -->|是| K["返回 canned response"]
   J -->|否| L["Orchestrator"]
@@ -137,6 +141,7 @@ flowchart TD
 ### 查询 debug_metadata
 - `debug_metadata.timings` 会返回 `query_extract`、`retrieve`、`assess_evidence`、`rerank`、`generate`、`verify`、`total` 的秒级耗时；这些字段也会作为 `debug_metadata` 顶层字段返回，缺失阶段以 `0.0` 返回。
 - `debug_metadata.retry_count` 返回实际发生的检索重试次数，不改变 RAG 分支逻辑。
+- `debug_metadata.agentic_router` 是可选字段：intent cache 命中时只标记 `skipped=true` 和 `reason=intent_cache_hit`；Router 执行时记录 `route`、`tool`、`reason`、`confidence`、`skipped` 和 `fallback_to_rag`。顶层 API 字段不因该字段改变。
 
 ## 函数级查询链路
 
@@ -151,7 +156,11 @@ flowchart TD
   F --> G["AnswerService.generate()"]
   G --> H["match_intent()"]
   H -->|命中| I["直接 AnswerOutput(PASS, intent.answer)"]
-  H -->|未命中| J["detect_language() 可选"]
+  H -->|未命中| AR["AgenticRouter.route()"]
+  AR -->|direct_response| AR1["AnswerOutput(PASS, 无 citations)"]
+  AR -->|clarify| AR2["AnswerOutput(ASK_USER, followup_questions)"]
+  AR -->|human_handoff| AR3["AnswerOutput(ESCALATE)"]
+  AR -->|rag_search/低置信/异常回退| J["detect_language() 可选"]
   J --> K["normalizer.normalize() -> QuerySpec 可选"]
   K --> L{"QuerySpec.skip_retrieval?"}
   L -->|是| M["canned response"]
@@ -253,6 +262,7 @@ flowchart TD
 ## 关键组件
 - `AnswerService`：RAG 总编排入口。
 - `match_intent`：意图缓存命中时跳过检索和 LLM。
+- `AgenticRouter`：intent cache 未命中后、固定 RAG 流程前的轻量工具选择器；支持 `rag_search`、`direct_response`、`clarify`、`human_handoff`，低置信或异常默认回退 `rag_search`。
 - `normalize_query`：生成 QuerySpec，包含 canonical query、required evidence、retrieval profile 等。
 - `Orchestrator`：按 UNDERSTAND、RETRIEVE、ASSESS_EVIDENCE、DECIDE、GENERATE、VERIFY 阶段推进。
 - `RetrievalService`：执行 BM25 + 向量检索、RRF/simple 融合、rerank、EvidenceSet 构建。

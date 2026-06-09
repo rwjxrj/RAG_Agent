@@ -1,12 +1,12 @@
 workflow: full
 phase: build
-build_mode: null
+build_mode: executing-plans
 build_pause: null
-isolation: null
+isolation: branch
 verify_mode: null
 base_ref: cbf1f0de213d960f0279d6710b31a6b087761a2f
 design_doc: docs/superpowers/specs/2026-06-09-agentic-router-design.md
-plan: null
+plan: docs/superpowers/plans/2026-06-09-agentic-router.md
 verify_result: pending
 verification_report: null
 branch_status: pending
