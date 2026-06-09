@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define the lightweight pre-RAG Agentic Router that selects whether a support request should enter the existing RAG flow, receive a direct response, ask for clarification, or be handed off to a human.
+
+## Requirements
 
 ### Requirement: Router executes only after intent cache miss
 The system SHALL execute Agentic Router only after guardrails have accepted the request and intent cache does not match a configured intent.
