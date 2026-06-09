@@ -2,6 +2,8 @@
 comet_change: agentic-router
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-09-agentic-router
+status: final
 ---
 
 # Agentic Router 技术设计

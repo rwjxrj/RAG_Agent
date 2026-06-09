@@ -2,6 +2,7 @@
 change: agentic-router
 design-doc: docs/superpowers/specs/2026-06-09-agentic-router-design.md
 base-ref: 051b8d83ebf741370b1030e97c5a868c6819257a
+archived-with: 2026-06-09-agentic-router
 ---
 
 # Agentic Router Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 051b8d83ebf741370b1030e97c5a868c6819257a
 
 **Tech Stack:** Python dataclasses、现有 FastAPI service 层、pytest、pytest-asyncio、现有 `AnswerOutput` 合约；不新增第三方依赖、不修改数据库、不修改 Docker。
 
+archived-with: 2026-06-09-agentic-router
 ---
 
 ## File Structure
@@ -50,6 +52,7 @@ base-ref: 051b8d83ebf741370b1030e97c5a868c6819257a
 - Router 低置信或抛错回退 `rag_search`：Task 2、Task 3、Task 5。
 - `/reply/generate`、同步会话、流式会话行为一致：Task 5。
 
+archived-with: 2026-06-09-agentic-router
 ---
 
 ### Task 1: Router Contract
