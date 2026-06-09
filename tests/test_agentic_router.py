@@ -67,3 +67,64 @@ def test_router_default_route_is_rag_search_for_knowledge_question():
     assert decision.reason == "support_knowledge_question"
     assert decision.confidence >= 0.8
     assert decision.fallback_to_rag is False
+
+
+def test_direct_response_for_greeting():
+    router = AgenticRouter()
+
+    decision = router.route(AgenticRouterInput(query="你好"))
+
+    assert decision.route == AgenticRoute.DIRECT_RESPONSE
+    assert decision.tool == "direct_response"
+    assert decision.reason == "greeting_or_capability"
+    assert decision.confidence >= 0.8
+
+
+def test_direct_response_for_capability_question():
+    router = AgenticRouter()
+
+    decision = router.route(AgenticRouterInput(query="你能帮我做什么？"))
+
+    assert decision.route == AgenticRoute.DIRECT_RESPONSE
+    assert decision.reason == "greeting_or_capability"
+
+
+def test_clarify_for_missing_critical_conditions():
+    router = AgenticRouter()
+
+    decision = router.route(AgenticRouterInput(query="帮我推荐一个套餐"))
+
+    assert decision.route == AgenticRoute.CLARIFY
+    assert decision.tool == "clarify"
+    assert decision.reason == "missing_critical_conditions"
+    assert 1 <= len(decision.clarifying_questions) <= 3
+
+
+def test_human_handoff_for_billing_and_execution_request():
+    router = AgenticRouter()
+
+    decision = router.route(AgenticRouterInput(query="帮我把订单退款并删除账号"))
+
+    assert decision.route == AgenticRoute.HUMAN_HANDOFF
+    assert decision.tool == "human_handoff"
+    assert decision.reason == "human_only_action"
+    assert "account_or_billing_action" in decision.risk_flags
+
+
+def test_low_confidence_falls_back_to_rag():
+    router = AgenticRouter(confidence_threshold=0.95)
+
+    decision = router.route(AgenticRouterInput(query="这个可以吗"))
+
+    assert decision.route == AgenticRoute.RAG_SEARCH
+    assert decision.tool == "rag_search"
+    assert decision.reason == "router_low_confidence"
+    assert decision.fallback_to_rag is True
+
+
+def test_exception_safe_route_falls_back_to_rag():
+    decision = AgenticRouter.safe_fallback("router_exception")
+
+    assert decision.route == AgenticRoute.RAG_SEARCH
+    assert decision.reason == "router_exception"
+    assert decision.fallback_to_rag is True

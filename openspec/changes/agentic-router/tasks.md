@@ -7,12 +7,12 @@
 
 ## 2. Router Decision Logic
 
-- [ ] 2.1 Implement `rag_search` as the default route for support knowledge questions.
-- [ ] 2.2 Implement `direct_response` classification for greetings, capability questions, and simple interactions that do not require knowledge-base evidence.
-- [ ] 2.3 Implement `clarify` classification for questions missing critical conditions, including one to three follow-up questions.
-- [ ] 2.4 Implement `human_handoff` classification for account, billing, security, deletion, refund execution, order modification, and other human-only actions.
-- [ ] 2.5 Add low-confidence handling that sets `fallback_to_rag=true` and routes to `rag_search`.
-- [ ] 2.6 Add exception handling that routes to `rag_search` without breaking the current answer flow.
+- [x] 2.1 Implement `rag_search` as the default route for support knowledge questions.
+- [x] 2.2 Implement `direct_response` classification for greetings, capability questions, and simple interactions that do not require knowledge-base evidence.
+- [x] 2.3 Implement `clarify` classification for questions missing critical conditions, including one to three follow-up questions.
+- [x] 2.4 Implement `human_handoff` classification for account, billing, security, deletion, refund execution, order modification, and other human-only actions.
+- [x] 2.5 Add low-confidence handling that sets `fallback_to_rag=true` and routes to `rag_search`.
+- [x] 2.6 Add exception handling that routes to `rag_search` without breaking the current answer flow.
 
 ## 3. RAG Entrypoint Integration
 
