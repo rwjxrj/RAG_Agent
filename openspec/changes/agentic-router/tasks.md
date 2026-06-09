@@ -1,9 +1,9 @@
 ## 1. Router Contract
 
-- [ ] 1.1 Define Agentic Router input model with `query`, `conversation_history`, `source`, and optional `trace_id`.
-- [ ] 1.2 Define Agentic Router output model with `route`, `tool`, `reason`, `confidence`, optional `query_for_tool`, `clarifying_questions`, `risk_flags`, and `fallback_to_rag`.
-- [ ] 1.3 Define the four supported route values: `rag_search`, `direct_response`, `clarify`, and `human_handoff`.
-- [ ] 1.4 Add unit tests for Router output validation and invalid route handling.
+- [x] 1.1 Define Agentic Router input model with `query`, `conversation_history`, `source`, and optional `trace_id`.
+- [x] 1.2 Define Agentic Router output model with `route`, `tool`, `reason`, `confidence`, optional `query_for_tool`, `clarifying_questions`, `risk_flags`, and `fallback_to_rag`.
+- [x] 1.3 Define the four supported route values: `rag_search`, `direct_response`, `clarify`, and `human_handoff`.
+- [x] 1.4 Add unit tests for Router output validation and invalid route handling.
 
 ## 2. Router Decision Logic
 
