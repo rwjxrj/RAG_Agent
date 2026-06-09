@@ -1,0 +1,14 @@
+{
+  "change": "agentic-router",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "52813575b287435ac9e69a0749031d1b1ccac6434339aa48b18124ffcd5e405a",
+  "files": [
+    { "path": "openspec/changes/agentic-router/proposal.md", "sha256": "9203a1d00decf8432cd920da51b17392b8c2a4774e6bf8004a749a038444e3e7" },
+    { "path": "openspec/changes/agentic-router/design.md", "sha256": "99043aa76eddfa7e7a5716e99070056ca489be1dae84633b4b15b48e5397a385" },
+    { "path": "openspec/changes/agentic-router/tasks.md", "sha256": "afecf401eb2ff88bb989f7c45c0ff6b5dfc6fcae0e54f46b7e4c1924ba7183cd" },
+    { "path": "openspec/changes/agentic-router/specs/agentic-router/spec.md", "sha256": "a1934bee8711ad1bccc6b5548062688e98297740bd5631eb0d4bee0c897d12c9" }
+  ]
+}
