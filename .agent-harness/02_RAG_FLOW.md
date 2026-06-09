@@ -143,6 +143,17 @@ flowchart TD
 - `debug_metadata.retry_count` 返回实际发生的检索重试次数，不改变 RAG 分支逻辑。
 - `debug_metadata.agentic_router` 是可选字段：intent cache 命中时只标记 `skipped=true` 和 `reason=intent_cache_hit`；Router 执行时记录 `route`、`tool`、`reason`、`confidence`、`skipped` 和 `fallback_to_rag`。顶层 API 字段不因该字段改变。
 
+### Agentic Router 接入点
+
+在 guardrails 通过且 intent cache 未命中后，`AnswerService.generate()` 会先执行轻量 Agentic Router。
+
+- `rag_search`：继续现有 `query extract -> retrieve -> assess evidence -> retry -> generate -> verify`。
+- `direct_response`：用于问候和能力说明，直接返回 `PASS`，不检索。
+- `clarify`：信息不足时返回 `ASK_USER` 和追问。
+- `human_handoff`：账号、账单、安全、删除、退款执行等人工处理请求返回 `ESCALATE`。
+
+低置信或 Router 异常必须回退 `rag_search`，不影响现有 RAG 可用性。`app/services/decision_router.py` 仍是检索后的证据决策器，不与本 Router 混用。
+
 ## 函数级查询链路
 
 ```mermaid

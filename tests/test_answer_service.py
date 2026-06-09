@@ -85,7 +85,8 @@ async def test_intent_cache_hit_skips_agentic_router(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_direct_response_returns_pass_without_rag():
+async def test_direct_response_returns_pass_without_rag(monkeypatch):
+    monkeypatch.setattr("app.services.answer_service.match_intent", lambda query: None)
     decision = AgenticRouterDecision(
         route=AgenticRoute.DIRECT_RESPONSE,
         tool="direct_response",

@@ -38,12 +38,12 @@
 - [x] 5.3 Add tests proving greetings and capability questions choose `direct_response` without retrieval or citations.
 - [x] 5.4 Add tests proving missing key conditions choose `clarify` and return `ASK_USER`.
 - [x] 5.5 Add tests proving account, billing, security, deletion, refund execution, and order modification requests choose `human_handoff` and return `ESCALATE`.
-- [ ] 5.6 Add tests proving prompt injection inputs are still intercepted by existing guardrails before Router.
+- [x] 5.6 Add tests proving prompt injection inputs are still intercepted by existing guardrails before Router.
 - [x] 5.7 Add tests proving low-confidence and Router exception paths fall back to `rag_search`.
-- [ ] 5.8 Add tests proving `/reply/generate`, synchronous conversation, and streaming conversation entrypoints use consistent Router policy.
+- [x] 5.8 Add tests proving `/reply/generate`, synchronous conversation, and streaming conversation entrypoints use consistent Router policy.
 
 ## 6. Documentation Sync
 
 - [x] 6.1 Update `.agent-harness/02_RAG_FLOW.md` only when the Router is actually wired into the RAG query chain.
-- [ ] 6.2 Keep `.agent-harness/spec/Agentic Router.md` aligned with final implementation decisions if behavior changes during build.
-- [ ] 6.3 Record any reproducible implementation failure or rollback lesson in `.agent-harness/07_FAILURE_MEMORY.md`.
+- [x] 6.2 Keep `.agent-harness/spec/Agentic Router.md` aligned with final implementation decisions if behavior changes during build.
+- [x] 6.3 Record any reproducible implementation failure or rollback lesson in `.agent-harness/07_FAILURE_MEMORY.md`.
