@@ -470,10 +470,10 @@ export interface ReCrawlDocumentResponse {
 }
 
 export const documents = {
-  fetchFromUrl: (url: string) =>
+  fetchFromUrl: (url: string, options?: { render_js?: boolean }) =>
     api<FetchFromUrlResponse>(`/documents/fetch-from-url`, {
       method: 'POST',
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, render_js: options?.render_js ?? false }),
     }),
   list: (page = 1, pageSize = 20, docType?: string, q?: string) => {
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
@@ -519,6 +519,7 @@ export const documents = {
     max_depth?: number
     ingest?: boolean
     exclude_prefixes?: string[]
+    render_js?: boolean
   }) =>
     api<CrawlWebsiteResponse>(`/documents/crawl-website`, {
       method: 'POST',

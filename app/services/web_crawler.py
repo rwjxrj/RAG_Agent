@@ -147,11 +147,13 @@ def crawl_website(
     max_depth: int = DEFAULT_MAX_DEPTH,
     timeout: float = DEFAULT_TIMEOUT,
     exclude_prefixes: list[str] | None = None,
+    render_js: bool = False,
 ) -> list[dict]:
     """
     Crawl website starting from seed_url. Returns list of doc dicts for ingestion.
     Each doc: {url, title, content, raw_text, doc_type, ...}
     exclude_prefixes: URLs starting with any of these prefixes will not be crawled.
+    render_js: if true, use browser-rendered HTML for JavaScript-heavy pages.
     """
     if not seed_url or not seed_url.strip():
         raise ValueError("Seed URL is required")
@@ -180,7 +182,7 @@ def crawl_website(
             continue
 
         try:
-            result = fetch_content_from_url(url, timeout=timeout)
+            result = fetch_content_from_url(url, timeout=timeout, render_js=render_js)
         except Exception as e:
             logger.warning("web_crawler_fetch_failed", url=url, error=str(e))
             continue

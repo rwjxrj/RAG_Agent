@@ -161,6 +161,7 @@ class DocumentUpdateRequest(BaseModel):
 
 class FetchFromUrlRequest(BaseModel):
     url: str = Field(..., min_length=1, description="URL to fetch content from")
+    render_js: bool = Field(default=False, description="If true, render JavaScript before extracting content")
 
 
 class FetchFromUrlResponse(BaseModel):
@@ -172,8 +173,9 @@ class FetchFromUrlResponse(BaseModel):
 class CrawlWebsiteRequest(BaseModel):
     url: str = Field(..., min_length=1, description="Seed URL to start crawling (e.g. https://example.com)")
     max_pages: int = Field(default=50, ge=1, le=500, description="Maximum number of pages to crawl")
-    max_depth: int = Field(default=3, ge=1, le=10, description="Maximum link depth from seed URL")
+    max_depth: int = Field(default=3, ge=0, le=10, description="Maximum link depth from seed URL")
     ingest: bool = Field(default=True, description="If true, ingest crawled docs into knowledge base")
+    render_js: bool = Field(default=False, description="If true, render JavaScript before extracting page content")
     exclude_prefixes: list[str] = Field(
         default_factory=list,
         description="URL prefixes to exclude. Any URL starting with one of these will not be crawled (e.g. https://example.com/admin)",

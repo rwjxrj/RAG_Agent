@@ -8,8 +8,6 @@ import {
   Bot,
   Menu,
   X,
-  Globe,
-  Ticket,
   Sparkles,
   Settings as SettingsIcon,
   MessageCircle,
@@ -33,9 +31,7 @@ import { LogOut, Key, BookOpen } from 'lucide-react'
 
 const NAV_ITEMS = [
   { to: '/', icon: MessageSquare, label: '会话管理', match: ['/conversations'] },
-  { to: '/tickets', icon: Ticket, label: '样本会话', match: ['/tickets'] },
   { to: '/documents', icon: FileText, label: '文档管理', match: ['/documents'] },
-  { to: '/crawler', icon: Globe, label: '抓取', match: ['/crawler'] },
   { to: '/dashboard', icon: BarChart3, label: '仪表盘', match: ['/dashboard'] },
   { to: '/intents', icon: MessageCircle, label: '意图缓存', match: ['/intents'] },
   { to: '/doc-types', icon: FileType, label: '文档类型', match: ['/doc-types'] },
@@ -76,7 +72,7 @@ function App() {
         className={`
           fixed top-0 left-0 z-50 h-screen w-[270px]
           flex flex-col transition-transform duration-300 ease-out
-          lg:translate-x-0 lg:static lg:z-auto
+          lg:translate-x-0
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}
         style={{
@@ -171,7 +167,7 @@ function App() {
         </div>
       </aside>
 
-      <div className="flex-1 flex flex-col min-h-screen lg:ml-0 relative z-10">
+      <div className="flex-1 flex flex-col min-h-screen lg:ml-[270px] relative z-10">
         <header className="sticky top-0 z-30 flex items-center h-14 px-4 glass lg:hidden">
           <button
             className="p-2 -ml-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.05]"

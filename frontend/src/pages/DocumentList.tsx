@@ -169,7 +169,7 @@ export default function DocumentList() {
                 <Database size={12} />
                 知识库
               </div>
-              <h1 className="mt-4 text-3xl font-semibold tracking-tight text-white sm:text-[2rem]">文档库</h1>
+              <h1 className="mt-4 text-3xl font-semibold tracking-tight text-black sm:text-[2rem]">文档库</h1>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400 sm:text-[15px]">
                 管理检索文档、刷新在线来源，并保持知识库内容整洁，以提高回答准确性。
               </p>
@@ -409,7 +409,7 @@ export default function DocumentList() {
                       </td>
                       <td className="px-5 py-4 align-top">
                         <div className="space-y-1.5">
-                          <div className="font-medium text-zinc-100">{d.title || '（未命名）'}</div>
+                          <div className="font-medium text-black">{d.title || '（未命名）'}</div>
                           <div className="max-w-[420px] truncate text-xs text-zinc-500">
                             {d.source_url || '未提供来源 URL'}
                           </div>
@@ -567,6 +567,7 @@ function CreateDocumentModal({
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [fetching, setFetching] = useState(false)
+  const [renderJs, setRenderJs] = useState(false)
 
   const handleFetchFromUrl = async () => {
     if (!url.trim()) {
@@ -576,7 +577,7 @@ function CreateDocumentModal({
     setFetching(true)
     setError(null)
     try {
-      const res = await documents.fetchFromUrl(url.trim())
+      const res = await documents.fetchFromUrl(url.trim(), { render_js: renderJs })
       setTitle(res.title)
       setContent(res.content)
     } catch (e) {
@@ -641,6 +642,16 @@ function CreateDocumentModal({
                 {fetching ? '获取中...' : '获取内容'}
               </button>
             </div>
+            <label className="mt-2 flex items-center gap-2.5 text-sm text-zinc-400 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={renderJs}
+                onChange={(e) => setRenderJs(e.target.checked)}
+                disabled={fetching}
+                className="rounded border-white/10 bg-transparent"
+              />
+              使用浏览器渲染 JavaScript 后获取内容
+            </label>
           </div>
           <div>
             <label className="block text-sm font-medium text-zinc-400 mb-2">标题</label>
@@ -781,10 +792,13 @@ function CrawlWebsiteModal({
   const [maxPages, setMaxPages] = useState(50)
   const [maxDepth, setMaxDepth] = useState(3)
   const [ingest, setIngest] = useState(true)
+  const [renderJs, setRenderJs] = useState(false)
   const [excludePrefixes, setExcludePrefixes] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [crawling, setCrawling] = useState(false)
   const [result, setResult] = useState<{ pages_crawled: number; pages_ingested: number; pages: Array<{ url: string; title: string }> } | null>(null)
+  const effectiveMaxPages = renderJs ? 1 : maxPages
+  const effectiveMaxDepth = renderJs ? 0 : maxDepth
 
   const handleCrawl = async () => {
     if (!url.trim()) {
@@ -801,10 +815,11 @@ function CrawlWebsiteModal({
         .filter(Boolean)
       const res = await documents.crawlWebsite({
         url: url.trim(),
-        max_pages: maxPages,
-        max_depth: maxDepth,
+        max_pages: effectiveMaxPages,
+        max_depth: effectiveMaxDepth,
         ingest,
         exclude_prefixes: prefixes.length > 0 ? prefixes : undefined,
+        render_js: renderJs,
       })
       setResult({
         pages_crawled: res.pages_crawled,
@@ -829,7 +844,7 @@ function CrawlWebsiteModal({
         </div>
         <div className="p-6 space-y-4">
           <p className="text-sm text-zinc-500">
-            从一个起始 URL 抓取整站页面。只会抓取同一域名下的页面。
+            默认从起始 URL 抓取同域名页面。开启 JavaScript 渲染时只抓取当前页面，适合动态渲染内容。
           </p>
           {error && <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/20 text-red-300 text-sm">{error}</div>}
           <div>
@@ -852,16 +867,36 @@ function CrawlWebsiteModal({
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-zinc-400 mb-2">最大页面数</label>
-              <input type="number" min={1} max={500} value={maxPages} onChange={(e) => setMaxPages(Math.min(500, Math.max(1, parseInt(e.target.value, 10) || 50)))} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" disabled={crawling} />
+              <input type="number" min={1} max={500} value={effectiveMaxPages} onChange={(e) => setMaxPages(Math.min(500, Math.max(1, parseInt(e.target.value, 10) || 50)))} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" disabled={crawling || renderJs} />
             </div>
             <div>
               <label className="block text-sm font-medium text-zinc-400 mb-2">最大深度</label>
-              <input type="number" min={1} max={10} value={maxDepth} onChange={(e) => setMaxDepth(Math.min(10, Math.max(1, parseInt(e.target.value, 10) || 3)))} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" disabled={crawling} />
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={effectiveMaxDepth}
+                onChange={(e) => {
+                  const next = parseInt(e.target.value, 10)
+                  setMaxDepth(Math.min(10, Math.max(0, Number.isNaN(next) ? 3 : next)))
+                }}
+                className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
+                disabled={crawling || renderJs}
+              />
             </div>
           </div>
+          {renderJs && (
+            <p className="text-xs text-zinc-500">
+              JavaScript 渲染模式会启动浏览器，已自动限制为只抓取当前 URL，避免整站动态抓取超时。
+            </p>
+          )}
           <label className="flex items-center gap-2.5 text-sm text-zinc-400 cursor-pointer">
             <input type="checkbox" checked={ingest} onChange={(e) => setIngest(e.target.checked)} disabled={crawling} className="rounded border-white/10 bg-transparent" />
             将抓取到的页面导入知识库
+          </label>
+          <label className="flex items-center gap-2.5 text-sm text-zinc-400 cursor-pointer">
+            <input type="checkbox" checked={renderJs} onChange={(e) => setRenderJs(e.target.checked)} disabled={crawling} className="rounded border-white/10 bg-transparent" />
+            使用浏览器渲染 JavaScript 后抓取页面内容
           </label>
           {result && (
             <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-sm animate-fade-in">

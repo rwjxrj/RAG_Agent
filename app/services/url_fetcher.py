@@ -1,6 +1,7 @@
 """Fetch and extract content from URLs for document ingestion."""
 
 import re
+import os
 from html import unescape
 from urllib.parse import urljoin, urlparse
 
@@ -10,6 +11,11 @@ from bs4 import BeautifulSoup
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 def _clean_html(html: str, base_url: str | None = None) -> str:
@@ -51,17 +57,16 @@ def _extract_title(soup: BeautifulSoup) -> str:
     return "Untitled"
 
 
-def fetch_content_from_url(url: str, timeout: float = 15.0) -> dict:
-    """
-    Fetch webpage and extract title + content.
-    Returns {"title": str, "content": str, "raw_html": str} or raises.
-    """
+def _normalize_fetch_url(url: str) -> str:
     if not url or not url.strip():
         raise ValueError("URL is required")
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+    return url
 
+
+def _fetch_static_html(url: str, timeout: float = 15.0) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; SupportAI-Bot/1.0; +https://github.com/support-ai)",
         "Accept": "text/html,application/xhtml+xml",
@@ -70,7 +75,48 @@ def fetch_content_from_url(url: str, timeout: float = 15.0) -> dict:
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
         resp = client.get(url, headers=headers)
         resp.raise_for_status()
-        html = resp.text
+        return resp.text
+
+
+def _fetch_rendered_html(url: str, timeout: float = 15.0) -> str:
+    """Fetch rendered HTML with Playwright for JavaScript-heavy pages."""
+    if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
+        for candidate in ("/ms-playwright", "/app/ms-playwright"):
+            if os.path.exists(candidate):
+                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = candidate
+                break
+
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright
+
+    timeout_ms = max(1000, int(timeout * 1000))
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent=_CHROME_UA,
+            viewport={"width": 1280, "height": 900},
+            locale="en-US",
+        )
+        page = context.new_page()
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            try:
+                page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 5000))
+            except PlaywrightTimeoutError:
+                logger.debug("url_fetch_render_networkidle_timeout", url=url[:120])
+            page.wait_for_timeout(500)
+            return page.content()
+        finally:
+            browser.close()
+
+
+def fetch_content_from_url(url: str, timeout: float = 15.0, render_js: bool = False) -> dict:
+    """
+    Fetch webpage and extract title + content.
+    Returns {"title": str, "content": str, "raw_html": str} or raises.
+    """
+    url = _normalize_fetch_url(url)
+    html = _fetch_rendered_html(url, timeout=timeout) if render_js else _fetch_static_html(url, timeout=timeout)
 
     soup = BeautifulSoup(html, "lxml")
     title = _extract_title(soup)

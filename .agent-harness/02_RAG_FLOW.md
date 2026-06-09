@@ -38,13 +38,13 @@ flowchart TD
 | `POST /v1/admin/ingest-from-source` | 从 `source/` 同步加载 JSON 并逐条入库。 | `app/api/routes/admin.py`, `app/services/source_loaders.py` |
 | `POST /v1/documents` | 前端/接口创建单个文档并立即入库。 | `app/api/routes/documents.py` |
 | `POST /v1/documents/upload` | 上传 `.txt`、`.md`、`.pdf` 后解析并入库。 | `app/api/routes/documents.py`, `app/services/file_parser.py` |
-| `POST /v1/documents/crawl-website` | 抓取网站页面，可选择直接入库。 | `app/api/routes/documents.py`, `app/services/web_crawler.py` |
+| `POST /v1/documents/crawl-website` | 抓取网站页面，可选择直接入库；`render_js=true` 时用 Playwright 渲染 JavaScript 后抽取内容，前端默认限制为单页抓取。 | `app/api/routes/documents.py`, `app/services/web_crawler.py`, `app/services/url_fetcher.py` |
 | `POST /v1/admin/ingest-tickets-to-file` | 将已批准工单导出到 `source/sample_conversations.json`。 | `app/api/routes/admin.py`, `app/services/ticket_sync.py` |
 | `scripts/ingest_from_source.py` | CLI 方式从 source 入库。 | `scripts/ingest_from_source.py` |
 | `scripts/ingest_tickets_from_source.py` | CLI 方式从 sample conversations 入库。 | `scripts/ingest_tickets_from_source.py` |
 
 ## 入库阶段说明
-- 读取：`source_loaders.py` 支持 pages、articles、plans、sales_kb、sample_conversations 等格式。
+- 读取：`source_loaders.py` 支持 pages、articles、plans、sales_kb、sample_conversations 等格式；URL/整站抓取默认使用静态 HTML，显式开启 `render_js` 时使用 Playwright 获取渲染后的页面内容。前端 JS 渲染模式默认提交 `max_pages=1`、`max_depth=0`，避免浏览器整站抓取超时。
 - 分类：部分入口会调用 `doc_type_classifier.resolve_doc_type`，是否启用受配置影响。
 - 清洗/分块：`prepare_document()` 读取 `raw_text` / `raw_html` / `content`，HTML 通过 `_clean_html()` 去除 script/style/nav/footer/header/aside 并保留 heading 和链接；随后 `_chunk_by_semantic_boundaries()` 先按 heading/段落形成 parent chunks，再由 `_expand_to_semantic_units()` 形成 `PreparedChunk`。`chunk_parent_refs_enabled` 开启时会写入 `parent_ref` 和 `parent_heading`。
 - 落库：Document、Chunk 写入 PostgreSQL。

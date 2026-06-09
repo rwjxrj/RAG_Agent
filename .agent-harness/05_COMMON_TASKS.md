@@ -85,7 +85,7 @@
 页面入口：
 - Conversations：`ConversationList.tsx`, `ConversationDetail.tsx`
 - Documents：`DocumentList.tsx`, `DocumentDetail.tsx`
-- Crawl：`Crawler.tsx`
+- Crawl：`Crawler.tsx` 保留为 WHMCS 直达页面；主导航默认隐藏，常规网页内容抓取从 Documents 的“抓取网站/添加文档”进入，并可选择 JavaScript 渲染抓取。JS 渲染抓取默认用于指定单页，不做动态整站爬取。
 - Dashboard：`Dashboard.tsx`
 - Settings：`Settings.tsx`，模型、向量、提示词和回答流程配置；回答流程默认显示“回答模式”，内部 RAG/LLM 细开关折叠在高级设置中。
 - Tickets：`TicketList.tsx`, `TicketDetail.tsx`

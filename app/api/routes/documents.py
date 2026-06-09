@@ -44,7 +44,7 @@ async def fetch_content_from_url(
     from app.services.url_fetcher import fetch_content_from_url as do_fetch
 
     try:
-        result = do_fetch(body.url)
+        result = do_fetch(body.url, render_js=body.render_js)
         return FetchFromUrlResponse(
             title=result["title"],
             content=result["content"],
@@ -76,6 +76,7 @@ async def crawl_website(
             max_pages=body.max_pages,
             max_depth=body.max_depth,
             exclude_prefixes=body.exclude_prefixes or [],
+            render_js=body.render_js,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
