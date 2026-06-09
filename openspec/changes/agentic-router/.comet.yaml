@@ -1,17 +1,19 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: executing-plans
 build_pause: null
 isolation: branch
-verify_mode: null
+verify_mode: full
 base_ref: cbf1f0de213d960f0279d6710b31a6b087761a2f
 design_doc: docs/superpowers/specs/2026-06-09-agentic-router-design.md
 plan: docs/superpowers/plans/2026-06-09-agentic-router.md
 verify_result: pending
-verification_report: null
+verification_report: docs/superpowers/reports/2026-06-09-agentic-router-verify.md
 branch_status: pending
 created_at: 2026-06-09
 verified_at: null
 archived: false
 handoff_context: openspec/changes/agentic-router/.comet/handoff/design-context.json
 handoff_hash: 52813575b287435ac9e69a0749031d1b1ccac6434339aa48b18124ffcd5e405a
+build_command: pytest tests/test_agentic_router.py tests/test_answer_service.py tests/test_agentic_router_entrypoints.py -q
+verify_command: pytest tests/test_agentic_router.py tests/test_answer_service.py tests/test_agentic_router_entrypoints.py -q
