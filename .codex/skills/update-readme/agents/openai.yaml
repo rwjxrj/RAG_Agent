@@ -1,0 +1,4 @@
+interface:
+  display_name: "更新 README"
+  short_description: "按当前项目事实重写或优化 README 文档"
+  default_prompt: "Use $update-readme to update README.md from the current project state."

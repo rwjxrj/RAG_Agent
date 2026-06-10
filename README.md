@@ -1,520 +1,535 @@
-# 自动回复聊天机器人 | Support AI Assistant
+# Support AI Assistant 企业客服 RAG 系统
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![React](https://img.shields.io/badge/React-19-blue.svg)](https://react.dev)
 
-**RAG (Retrieval-Augmented Generation) 聊天机器人** - 面向企业内部的 Support AI Assistant。它基于知识库上的**混合检索**（BM25 + 向量搜索），通过 REST API 回答支持问题。知识库可结合网页抓取数据、人工整理的示例会话，以及来自高评分会话的持续学习。
+## 结论
 
-> 关键词：RAG 聊天机器人、LLM 支持助手、WHMCS 工单爬虫、向量搜索、知识库 AI、客服自动化
+这是一个面向企业客服、工单和 livechat 场景的 RAG 支持助手。项目由 FastAPI 后端、React 管理台、PostgreSQL、Redis/Celery、OpenSearch、Qdrant 和 MinIO 组成，核心能力是把文档、网页、上传文件和 WHMCS 工单沉淀为知识库，再通过 Agentic Router、混合检索、证据评估、LLM 生成和审核器输出可引用、可追踪的客服建议回复。
+
+适合的使用方式：
+
+- 作为内部客服控制台：管理知识库、会话、工单、意图缓存、文档类型、模型配置和 API Token。
+- 作为外部系统的建议回复 API：WHMCS、Zendesk、livechat 或自建 helpdesk 可直接调用 `/v1/reply/generate`。
+- 作为持续学习闭环：抓取或导入工单，人工审批高质量样本，再回写到 `source/sample_conversations.json` 并重新入库。
 
 ## 目录
 
-- [数据来源与持续学习](#数据来源与持续学习)
-- [功能特性](#功能特性)
+- [系统架构](#系统架构)
+- [核心流程](#核心流程)
+- [功能模块](#功能模块)
 - [技术栈](#技术栈)
 - [快速开始](#快速开始)
-- [使用指南](#使用指南)
-- [认证](#认证)
-- [API 端点](#api-端点)
-- [配置](#配置)
+- [数据入库与持续学习](#数据入库与持续学习)
+- [API 与集成](#api-与集成)
+- [认证方式](#认证方式)
+- [配置说明](#配置说明)
+- [常用命令](#常用命令)
 - [项目结构](#项目结构)
+- [测试与验证](#测试与验证)
+- [故障排查](#故障排查)
 
-## 数据来源与持续学习
+## 系统架构
 
-知识库由**三类来源**构建，并通过反馈闭环**持续改进**：
+```mermaid
+flowchart TD
+  FE["React 前端 / 管理台"] --> API["FastAPI /v1"]
+  EXT["外部工单或客服系统"] --> API
+  API --> PG["PostgreSQL"]
+  API --> REDIS["Redis"]
+  API --> OS["OpenSearch BM25"]
+  API --> QD["Qdrant 向量检索"]
+  API --> MINIO["MinIO / S3 对象存储"]
+  REDIS --> CELERY["Celery Worker"]
+  CELERY --> PG
+  CELERY --> OS
+  CELERY --> QD
+  API --> LLM["OpenAI-compatible LLM / Embedding"]
+```
 
-### 1. 网页抓取数据
+运行时服务：
 
-- **WHMCS 工单**：从 WHMCS 抓取支持工单（通过 Playwright，使用 cookie 或账号密码登录）
-- **URL 文档**：通过 `/documents/fetch-from-url` API 抓取网页内容（政策、FAQ、文档）
-- **整站抓取**：通过 `/documents/crawl-website` 抓取整个站点
-- **Source JSON**：支持多种格式摄取，如 `pages`（url、title、text）、`articles`、`plans`、`sales_kb` 等
-- **WHMCS SQL 转储**：通过 `make import-whmcs` 从 `source/*.sql` 导入工单
+| 服务 | 职责 | 默认访问 |
+|---|---|---|
+| `frontend` | React/Vite 构建后的管理台，由容器内 nginx 提供静态页面。 | `http://localhost:5174` |
+| `api` | FastAPI 后端，挂载认证、会话、回复、文档、工单、后台配置和健康检查接口。 | `http://localhost:8000` |
+| `worker` | Celery worker，处理异步文档入库任务。 | 无公开端口 |
+| `postgres` | 业务数据库，保存文档、分块、会话、消息、工单、配置、用户和 token。 | `127.0.0.1:5433` |
+| `redis` | 缓存、队列 broker 和 Celery result backend。 | `127.0.0.1:6380` |
+| `opensearch` | BM25/关键词检索索引。 | `127.0.0.1:19200` |
+| `qdrant` | 向量检索集合。 | `127.0.0.1:6333` |
+| `minio` | S3 兼容对象存储，保存上传或原文对象。 | `127.0.0.1:9000`，控制台 `9001` |
 
-### 2. 人工整理的示例会话
+`docker-compose --profile full up -d` 会额外启用 `nginx` 网关并监听 `80` 端口。
 
-- **sample_conversations.json**：直接添加高质量示例会话（真实问答）
-- **sample_docs.json**：预先准备的静态文档（网页、文章）
-- **custom_docs.json**：从管理后台创建并同步回文件的文档
+## 核心流程
 
-### 3. 从高评分会话学习
+### 查询流程
 
-- 抓取到的工单需要**人工审核**（批准/拒绝）。只有**已批准**的工单会加入知识库
-- 通过 `POST /v1/admin/ingest-tickets-to-file` 将**已批准工单导出**到 `sample_conversations.json`
-- 重新运行摄取流程，将新的示例会话嵌入并索引到 OpenSearch/Qdrant
-- 闭环：*抓取 → 审核（批准）→ 导出 → 摄取*，让系统从真实高质量会话中**持续学习**
+```mermaid
+flowchart TD
+  A["/v1/reply/generate 或 /v1/conversations/{id}/messages"] --> B["Guardrails: 注入检查与输入清洗"]
+  B --> C["AnswerService.generate"]
+  C --> D{"Intent Cache 命中?"}
+  D -->|是| E["返回预设答案，跳过检索"]
+  D -->|否| F["AgenticRouter pre-RAG 路由"]
+  F -->|direct_response| G["直接回复"]
+  F -->|clarify| H["ASK_USER 追问"]
+  F -->|human_handoff| I["ESCALATE 转人工"]
+  F -->|rag_search 或回退| J["语言识别 + Normalizer -> QuerySpec"]
+  J --> K["Orchestrator phases"]
+  K --> L["RetrievalService"]
+  L --> M["OpenSearch BM25"]
+  L --> N["Qdrant Vector"]
+  M --> O["RRF/simple 融合 + rerank + EvidenceSet"]
+  N --> O
+  O --> P["证据评估 / 决策 / LLM 生成"]
+  P --> Q["ReviewerGate 校验"]
+  Q --> R["AnswerOutput: answer, decision, citations, debug_metadata"]
+```
 
----
+关键点：
 
-## 功能特性
+- `AgenticRouter` 在 intent cache 未命中后执行，支持 `rag_search`、`direct_response`、`clarify`、`human_handoff`。低置信或异常会回退到 RAG。
+- 检索使用 OpenSearch + Qdrant，支持 RRF 融合、rerank、doc type 多样性、EvidenceSet 和质量门控。
+- 生成后会经过 reviewer / claim-level review / targeted retry 等校验逻辑，降低无证据回答和高风险过度承诺。
+- 会话接口会保存消息、引用和 `debug_metadata`；无状态建议回复接口不会创建会话。
 
-- **RAG**：BM25（OpenSearch）+ 向量（Qdrant）+ reranking
-- **会话**：CRUD、同步/流式聊天，可关联 ticket/livechat
-- **工单**：从 DB 列表查看，支持审批流程（pending/approved/rejected）
-- **文档**：CRUD、从 URL 抓取、整站抓取、重新抓取、上传
-- **WHMCS 爬虫**：通过 Playwright 抓取工单，保存 cookie，检查会话状态
-- **管理后台**：摄取文档/工单，配置 prompts、intents、doc-types、LLM、archi，以及 branding
-- **认证**：JWT 登录、API tokens（sk_*）、用户管理
-- **前端**：React + Vite，包含登录、会话、示例会话、文档、抓取、仪表盘、意图、文档类型、设置、API Tokens、API 参考
+### 入库流程
+
+```mermaid
+flowchart TD
+  A["source/*.json / source/*.sql"] --> B["scripts 或 /admin/ingest-from-source"]
+  C["URL / 整站抓取"] --> D["/documents/fetch-from-url / crawl-website"]
+  E["上传文件"] --> F["/documents/upload"]
+  G["WHMCS 工单抓取"] --> H["Ticket 表 + 人工审批"]
+  H --> I["/admin/ingest-tickets-to-file"]
+  I --> A
+  B --> J["source_loaders"]
+  D --> K["url_fetcher / web_crawler"]
+  F --> L["file_parser"]
+  J --> M["IngestionService.ingest_document"]
+  K --> M
+  L --> M
+  M --> N["清洗、语义分块、metadata"]
+  N --> O["PostgreSQL Document/Chunk"]
+  N --> P["Embedding Provider"]
+  P --> Q["Qdrant"]
+  N --> R["OpenSearch"]
+```
+
+关键点：
+
+- `IngestionService` 以 `Document.source_url` 和内容 checksum 做幂等判断。
+- 内容未变化且未 `force_reindex` 时，只更新 metadata，不重新分块、embedding 或索引。
+- 文档更新时会删除旧 chunk 的 OpenSearch/Qdrant 索引和 DB 记录，再写入新索引。
+- URL 抓取支持静态 HTML；显式开启 `render_js` 时使用 Playwright 渲染。
+
+## 功能模块
+
+| 模块 | 当前能力 |
+|---|---|
+| 会话管理 | 创建会话、同步/流式发送消息、保存引用和 debug metadata，可关联 ticket/livechat。 |
+| 建议回复 | `POST /v1/reply/generate` 提供无状态客服建议回复，适合集成外部系统。 |
+| 文档管理 | 文档 CRUD、URL 抓取、整站抓取、重新抓取、上传文件、同步 source JSON。 |
+| 工单学习 | WHMCS cookie/账号登录抓取、SQL 转储导入、审批 pending/approved/rejected、导出已批准样本。 |
+| RAG 管线 | Agentic Router、QuerySpec、混合检索、EvidenceSet、证据质量门控、ReviewerGate、targeted retry。 |
+| 配置中心 | LLM、Embedding、架构开关、system prompt、branding、意图缓存、文档类型。 |
+| 认证和集成 | JWT 登录、DB API Token (`sk_*`)、环境变量 API key、管理员 key。 |
+| 管理台 | 会话、文档、仪表盘、意图缓存、文档类型、设置、API Token、API Reference。 |
+
+前端当前导航入口包括：会话管理、文档管理、仪表盘、意图缓存、文档类型、设置、API Token、API 参考。路由中也保留了 tickets 和 crawler 页面入口。
 
 ## 技术栈
 
-- **API**：FastAPI + Pydantic v2 + Uvicorn
-- **DB**：PostgreSQL 15+
-- **缓存/队列**：Redis + Celery
-- **搜索**：OpenSearch（BM25）、Qdrant（向量）
-- **Embeddings/LLM**：OpenAI（可插拔）
-- **爬虫**：Playwright（Chromium）
-- **前端**：React 19、Vite 7、Tailwind CSS
+| 层级 | 技术 |
+|---|---|
+| 后端 API | Python 3.11+、FastAPI、Pydantic v2、Uvicorn |
+| 数据库 | PostgreSQL、SQLAlchemy、Alembic |
+| 异步任务 | Redis、Celery |
+| 检索 | OpenSearch、Qdrant、RRF、reranker |
+| LLM/Embedding | OpenAI SDK，兼容 OpenAI Chat Completions / Embeddings 的模型服务 |
+| 爬虫和解析 | Playwright、BeautifulSoup、lxml |
+| 观测 | Prometheus metrics、结构化日志、OpenTelemetry tracing |
+| 前端 | React 19、Vite 7、TypeScript、Tailwind CSS、lucide-react |
+| 对象存储 | MinIO / S3 compatible |
 
 ## 快速开始
 
-### 前置条件
+### 1. 准备环境变量
 
-- Docker 和 docker-compose
-- OpenAI API key
-
-### 环境变量
-
-```bash
-cp .env.example .env
-# 编辑 .env：OPENAI_API_KEY、JWT_SECRET（生产环境）、ADMIN_API_KEY、API_KEY
+```powershell
+copy .env.example .env
 ```
 
-### 使用 Docker Compose 运行
+至少需要设置：
 
-```bash
+```env
+OPENAI_API_KEY=sk-your-api-key
+ADMIN_API_KEY=your-admin-key
+JWT_SECRET=replace-with-a-strong-secret
+```
+
+如果使用 DeepSeek、Qwen、GLM、Kimi、SiliconFlow 或私有中转服务，保持 OpenAI-compatible 接口即可，同时设置 `OPENAI_BASE_URL` 和模型名。运行时更推荐在前端 Settings 中修改 LLM / Embedding 配置，因为数据库配置优先级高于 `.env` fallback。
+
+### 2. 启动服务
+
+```powershell
 docker-compose up -d
 ```
 
-- **API**：http://localhost:8000
-- **前端**：http://localhost:5174
-- **MinIO**：http://localhost:9000（控制台：9001）
+访问入口：
 
-**使用 Nginx 网关**（API 监听 80 端口）：
+- API: `http://localhost:8000`
+- Swagger: `http://localhost:8000/docs`
+- 前端: `http://localhost:5174`
+- MinIO Console: `http://localhost:9001`
 
-```bash
-docker-compose --profile full up -d
+### 3. 初始化数据库和管理员
+
+```powershell
+docker-compose exec api alembic upgrade head
+docker-compose exec api python -m scripts.create_admin_user
 ```
 
-### 迁移与初始化设置
+本地服务已连接好数据库时，也可以使用：
 
-```bash
-# 容器内执行
-docker-compose exec api alembic upgrade head
-docker-compose exec api python -m scripts.create_admin_user   # 创建管理员（迁移 011 之后）
-docker-compose exec api python scripts/ingest_from_source.py
-docker-compose exec api python scripts/ingest_tickets_from_source.py
-
-# 或本地执行（服务已运行）
+```powershell
 make init-db
 make create-admin
+```
+
+### 4. 导入初始知识库
+
+```powershell
+docker-compose exec api python scripts/ingest_from_source.py
+docker-compose exec api python scripts/ingest_tickets_from_source.py
+```
+
+或本地执行：
+
+```powershell
 make ingest
+python scripts/ingest_tickets_from_source.py
 ```
 
-`source/` 中的**源文件**：
+### 5. 本地开发模式
 
-- `sample_docs.json` - 文档（pages: url、title、text）
-- `sample_conversations.json` - 工单/会话（来自 WHMCS 抓取或手动整理）
-- `custom_docs.json` - 管理后台创建的文档
-- `*.sql` - 用于 `make import-whmcs` 的 WHMCS SQL 转储
+如果只想本地启动 API 和前端，可先用 Docker Compose 启动基础设施，再运行：
 
-支持的格式见 `app/services/source_loaders.py`。
-
-### 本地开发
-
-1. 启动 PostgreSQL、Redis、OpenSearch、Qdrant（或只用 docker-compose 启动基础设施）
-2. `pip install -r requirements.txt`
-3. `uvicorn app.main:app --reload`
-4. Worker：`celery -A worker.celery_app worker --loglevel=info`
-5. `alembic upgrade head`
-6. `make create-admin`（创建第一个管理员用户）
-
-## 使用指南
-
-### 首次设置（完整流程）
-
-1. **启动服务**：`docker-compose up -d`
-2. **运行迁移**：`docker-compose exec api alembic upgrade head`
-3. **创建管理员**：`docker-compose exec api python -m scripts.create_admin_user`（按提示输入用户名/密码）
-4. **登录前端**：打开 http://localhost:5174，用刚创建的账号登录
-5. **添加知识库数据**（从下面选择一种或多种方法）
-
-### 方法 1：从 `source/` 中的 JSON 文件摄取
-
-准备 `source/sample_docs.json` 或 `source/sample_conversations.json`：
-
-```json
-// sample_docs.json - 文档（网页、政策、FAQ）
-{
-  "pages": [
-    {"url": "https://example.com/refund-policy", "title": "Refund Policy", "text": "Full content..."}
-  ]
-}
-
-// sample_conversations.json - 来自工单的问答（需要 external_id、subject、description）
-{
-  "source": "whmcs",
-  "conversations": [
-    {
-      "external_id": "12345",
-      "subject": "Refund question",
-      "description": "User: How do I request a refund?\nStaff: You can request a refund within 30 days...",
-      "status": "Closed",
-      "priority": "Medium"
-    }
-  ]
-}
+```powershell
+uvicorn app.main:app --reload
+celery -A worker.celery_app worker --loglevel=info
 ```
 
-运行摄取：
-
-```bash
-make ingest                                    # 摄取文档
-python scripts/ingest_tickets_from_source.py   # 摄取示例会话
+```powershell
+cd frontend
+npm run dev
 ```
 
-### 方法 2：从 URL 抓取或整站抓取
+Vite 本地开发默认访问 `http://localhost:5173`；Docker 前端访问 `http://localhost:5174`。
 
-- **单个 URL**：使用 API `POST /v1/documents/fetch-from-url`，请求体为 `{"url": "https://..."}`；也可在前端 **Documents** → Add → Fetch from URL 操作
-- **整个网站**：使用 API `POST /v1/documents/crawl-website`，请求体为 `{"base_url": "https://example.com", "max_pages": 50}`；也可在前端 **Documents** → Crawl website 操作
+## 数据入库与持续学习
 
-### 方法 3：抓取 WHMCS 工单（通过前端）
+### source 文件
 
-1. 进入 **Crawl**（侧边栏）
-2. 输入 **Base URL**（例如 `https://billing.example.com`）
-3. **登录 WHMCS**：
-   - **选项 A（Cookies）**：在浏览器中登录 WHMCS → DevTools → Application → Cookies → 复制 JSON → 粘贴到 “Session cookies” 字段 → 保存 cookies
-   - **选项 B（Credentials）**：输入用户名、密码（如适用，也输入 TOTP）→ 点击 “Login & Crawl”
-4. **检查连接** → 如果正常，点击 **Crawl tickets**
-5. 进入 **Sample conversations**（Tickets）→ 审核每个工单 → **批准**高质量工单
-6. **导出已批准内容** → 调用 `POST /v1/admin/ingest-tickets-to-file`（或对应按钮）写入 `sample_conversations.json`
-7. 运行 `python scripts/ingest_tickets_from_source.py` 进行 embedding 和索引
+`source/` 是主要知识源目录，常见文件包括：
 
-### 方法 4：从 WHMCS SQL 转储导入
+| 文件 | 用途 |
+|---|---|
+| `sample_docs.json` | 静态文档、网页、政策、FAQ、价格页等。 |
+| `sample_conversations.json` | 高质量工单或客服会话样本。 |
+| `custom_docs.json` | 管理后台创建并同步回文件的文档。 |
+| `*.sql` | WHMCS SQL 转储，可通过导入脚本解析为工单。 |
 
-如果你有 WHMCS 转储文件（例如 `source/greenvps_whmcs.sql`）：
+`app/services/source_loaders.py` 支持 `pages`、`articles`、`plans`、`sales_kb`、`sample_conversations` 等格式。
 
-```bash
-make import-whmcs-dry   # 先验证解析
-make import-whmcs       # 执行实际导入
+### URL、整站和上传
+
+- 单 URL 抓取：`POST /v1/documents/fetch-from-url`
+- 整站抓取：`POST /v1/documents/crawl-website`
+- 上传文件：`POST /v1/documents/upload`
+- 重新抓取：`POST /v1/documents/{id}/re-crawl` 或 `POST /v1/documents/re-crawl-all`
+
+### WHMCS 工单闭环
+
+1. 在 Crawler/Tickets 相关页面或 admin API 中配置 WHMCS base URL 和 cookie。
+2. 抓取工单写入 Ticket 表。
+3. 人工审批高质量工单为 `approved`。
+4. 调用 `POST /v1/admin/ingest-tickets-to-file` 导出到 `source/sample_conversations.json`。
+5. 运行 `python scripts/ingest_tickets_from_source.py` 重新 embedding 并写入 OpenSearch/Qdrant。
+
+SQL 转储导入：
+
+```powershell
+make import-whmcs-dry
+make import-whmcs
 ```
 
-本项目通过结构化评估、prompt 优化和持续反馈闭环提升聊天机器人性能。
+先 dry run，确认解析结果后再写入数据库。
 
-由 [OptyxStack AI Optimization](https://optyxstack.com/ai-optimization) 提供支持，用于增强准确性、相关性和大规模可靠性。
+## API 与集成
 
-然后在 **Sample conversations** 中批准工单，并按方法 3 的步骤 6-7 摄取。
+所有业务 API 默认带 `/v1` 前缀。
 
-### 聊天流程（API）
+### 常用端点
 
-1. **创建会话**：
-   ```bash
-   curl -X POST http://localhost:8000/v1/conversations \
-     -H "Authorization: Bearer YOUR_JWT" \
-     -H "Content-Type: application/json" \
-     -d '{"source_type": "ticket", "source_id": "TKT-123"}'
-   ```
-2. **发送消息**（同步或流式）：
-   ```bash
-   curl -X POST http://localhost:8000/v1/conversations/{CONV_ID}/messages \
-     -H "Authorization: Bearer YOUR_JWT" \
-     -H "Content-Type: application/json" \
-     -d '{"content": "What is your refund policy?"}'
-   ```
-3. 响应包含 `answer`（RAG 生成结果）和 `debug_metadata`（检索、证据）。
+| 模块 | 方法和路径 | 说明 |
+|---|---|---|
+| Auth | `POST /v1/auth/login` | 用户名密码登录，返回 JWT。 |
+| Auth | `GET /v1/auth/me` | 获取当前用户。 |
+| Auth | `GET/POST/DELETE /v1/auth/tokens` | 管理 DB API Token。 |
+| Conversations | `GET/POST /v1/conversations` | 会话列表和创建。 |
+| Conversations | `POST /v1/conversations/{id}/messages` | 同步聊天。 |
+| Conversations | `POST /v1/conversations/{id}/messages:stream` | SSE 流式聊天。 |
+| Reply | `POST /v1/reply/generate` | 无状态建议回复，适合外部客服系统。 |
+| Documents | `GET/POST/PATCH/DELETE /v1/documents` | 文档管理。 |
+| Documents | `POST /v1/documents/fetch-from-url` | 从 URL 抓取文档。 |
+| Documents | `POST /v1/documents/crawl-website` | 抓取网站。 |
+| Documents | `POST /v1/documents/upload` | 上传文件并入库。 |
+| Tickets | `GET /v1/tickets` | 工单列表。 |
+| Tickets | `GET /v1/tickets/{id}` | 工单详情。 |
+| Admin | `POST /v1/admin/ingest` | 异步入库文档。 |
+| Admin | `POST /v1/admin/ingest-from-source` | 从 `source/` 同步入库。 |
+| Admin | `POST /v1/admin/crawl-tickets` | 抓取 WHMCS 工单。 |
+| Admin | `PATCH /v1/admin/tickets/{id}/approval` | 更新工单审批状态。 |
+| Admin | `GET/PUT /v1/admin/config/llm` | LLM 配置。 |
+| Admin | `GET/PUT /v1/admin/config/embedding` | Embedding 配置。 |
+| Admin | `GET/PUT /v1/admin/config/archi` | RAG 架构开关。 |
+| Admin | `GET/POST/PUT/DELETE /v1/admin/intents` | 意图缓存管理。 |
+| Admin | `GET/POST/PUT/DELETE /v1/admin/doc-types` | 文档类型管理。 |
+| Health | `GET /v1/health` | 健康检查。 |
+| Metrics | `GET /v1/metrics` | Prometheus 指标。 |
+| Dashboard | `GET /v1/dashboard/stats` | 仪表盘统计。 |
 
-### 前端主要页面
+### 建议回复示例
 
-| 页面 | 用途 |
-|------|------|
-| **Conversations** | 查看会话列表、创建新会话、试用聊天 |
-| **Sample conversations** | 查看抓取/导入的工单、批准/拒绝、导出已批准内容 |
-| **Documents** | 文档 CRUD、抓取 URL、整站抓取、重新抓取 |
-| **Crawl** | 配置 WHMCS、保存 cookies、抓取工单 |
-| **Dashboard** | Token 统计、检索、升级转人工指标 |
-| **Intents** | 意图 CRUD（查询分类） |
-| **Doc Types** | 文档类型 CRUD（policy、faq、pricing 等） |
-| **Settings** | System prompt、LLM 配置、branding、领域术语 |
-| **API Tokens** | 创建/撤销 API token（sk_*） |
-| **API Reference** | API 文档 |
-
-### 外部系统集成
-
-- **建议回复（平台无关）**：调用 `POST /v1/reply/generate`，将 `query` 设置为 ticket/chat 内容。无需创建会话。适用于 WHMCS、Zendesk、livechat 或任何 helpdesk。
-- **Livechat / 工单系统（聊天流程）**：调用 `POST /v1/conversations`，传入 `source_type: "livechat"` 或 `"ticket"`，`source_id` 为外部系统中的 ID。用户发送消息时，调用 `POST /v1/conversations/{id}/messages`，并使用 `answer` 展示给用户。
-- **Webhook**：可以用自己的 webhook endpoint 包装 API，以接收来自 livechat/ticket 平台的请求。
-
-### 故障排查
-
-| 问题 | 建议 |
-|------|------|
-| 前端登录返回 401 | 检查 `.env` 中的 `JWT_SECRET`，确认已运行 `make create-admin` |
-| WHMCS 抓取失败 | Cookies 已过期，重新登录 WHMCS 并复制新的 cookies |
-| 摄取没有数据 | 检查 `source/` 中的文件格式是否正确（pages、conversations），运行 `make ingest-dry` 查看日志 |
-| API 返回 401 | 使用 Bearer JWT（来自 `/auth/login`）或有效的 `X-API-Key` |
-| OpenSearch/Qdrant 错误 | 确认所有服务健康：`docker-compose ps` |
-
-## 认证
-
-API 接受**三种认证方式**：
-
-1. **Bearer JWT** - 来自 `POST /v1/auth/login`（用户名/密码）
-2. **X-API-Key** - 环境变量 `API_KEY` 或 DB API token（sk_*）
-3. **X-Admin-API-Key** - 用于管理端点（环境变量 `ADMIN_API_KEY`，或 role=admin 的 JWT）
-
-**创建管理员用户**（迁移 011 之后）：
-
-```bash
-make create-admin
-# 或：python -m scripts.create_admin_user
-```
-
-**API tokens**（sk_*）：通过 `POST /v1/auth/tokens` 创建（需要 Bearer JWT）。Token 存储在 DB 中，可撤销。
-
-## API 端点
-
-### Auth
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/auth/login` | 登录（用户名、密码）→ JWT |
-| GET | `/v1/auth/me` | 当前用户（Bearer JWT） |
-| GET | `/v1/auth/tokens` | 列出 API tokens |
-| POST | `/v1/auth/tokens` | 创建 API token |
-| DELETE | `/v1/auth/tokens/{token_id}` | 撤销 token |
-
-### Conversations
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/conversations` | 列表（分页，筛选：source_type、source_id） |
-| POST | `/v1/conversations` | 创建（source_type: ticket/livechat, source_id） |
-| GET | `/v1/conversations/{id}` | 详情 + messages |
-| PATCH | `/v1/conversations/{id}` | 更新 metadata |
-| DELETE | `/v1/conversations/{id}` | 删除 |
-| POST | `/v1/conversations/{id}/messages` | 发送消息（同步） |
-| POST | `/v1/conversations/{id}/messages:stream` | 发送消息（SSE） |
-
-### Suggest Reply（平台无关）
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/reply/generate` | 生成建议回复（ticket、livechat、helpdesk）。无状态，无需会话。 |
-
-### Tickets
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/tickets` | 列表（分页，筛选：status、approval_status、q） |
-| GET | `/v1/tickets/{id}` | 工单详情 |
-
-### Documents
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/documents` | 列表（分页，筛选：doc_type、q） |
-| GET | `/v1/documents/{id}` | 详情 |
-| POST | `/v1/documents` | 创建文档（ingest） |
-| POST | `/v1/documents/fetch-from-url` | 从 URL 抓取内容 |
-| POST | `/v1/documents/crawl-website` | 抓取网站 |
-| POST | `/v1/documents/re-crawl-all` | 重新抓取所有文档 |
-| POST | `/v1/documents/upload` | 上传文档 |
-| POST | `/v1/documents/{id}/re-crawl` | 重新抓取单个文档 |
-| PATCH | `/v1/documents/{id}` | 更新 metadata |
-| DELETE | `/v1/documents/{id}` | 删除 |
-
-### Admin（Bearer JWT admin / X-Admin-API-Key）
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/admin/ingest` | 摄取文档（进入 Celery 队列） |
-| POST | `/v1/admin/ingest-from-source` | 从 source/ 摄取（同步） |
-| POST | `/v1/admin/save-whmcs-cookies` | 保存 WHMCS cookies |
-| POST | `/v1/admin/check-whmcs-cookies` | 检查 cookies |
-| GET | `/v1/admin/whmcs-cookies` | 获取已保存 cookies |
-| GET | `/v1/admin/config/whmcs` | WHMCS 默认配置 |
-| POST | `/v1/admin/crawl-tickets` | 抓取 WHMCS 工单 |
-| PATCH | `/v1/admin/tickets/{id}/approval` | 更新审批状态（pending/approved/rejected） |
-| POST | `/v1/admin/ingest-tickets-to-file` | 导出已批准工单 → sample_conversations.json |
-| GET/PUT | `/v1/admin/config/llm` | LLM 配置 |
-| GET/PUT | `/v1/admin/config/archi` | 架构配置（normalizer、evidence 等） |
-| GET/PUT | `/v1/admin/config/system-prompt` | System prompt |
-| GET/PUT | `/v1/admin/config/{key}` | App 配置（通用） |
-| POST | `/v1/admin/config/refresh-cache` | 刷新配置缓存 |
-| POST | `/v1/admin/config/auto-generate-from-domain` | 从 domain 自动生成 branding |
-| GET/POST/PUT/DELETE | `/v1/admin/intents` | 意图 CRUD |
-| GET/POST/PUT/DELETE | `/v1/admin/doc-types` | 文档类型 CRUD |
-
-### Health & Dashboard
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/health` | 健康检查 |
-| GET | `/v1/metrics` | Prometheus 指标 |
-| GET | `/v1/dashboard/stats` | Token 成本、检索命中率、升级转人工率 |
-
-## cURL 请求示例
-
-### 登录
-
-```bash
-curl -X POST http://localhost:8000/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "your-password"}'
-```
-
-### 创建会话（使用 Bearer JWT 或 X-API-Key）
-
-```bash
-curl -X POST http://localhost:8000/v1/conversations \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_JWT" \
-  -d '{"source_type": "ticket", "source_id": "TKT-12345", "metadata": {}}'
-```
-
-### 发送消息
-
-```bash
-curl -X POST http://localhost:8000/v1/conversations/{CONV_ID}/messages \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_JWT" \
-  -H "X-External-User-Id: user-123" \
-  -d '{"content": "What is your refund policy?"}'
-```
-
-### 生成建议回复（平台无关）
-
-```bash
-curl -X POST http://localhost:8000/v1/reply/generate \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_JWT" \
+```powershell
+curl -X POST http://localhost:8000/v1/reply/generate `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer YOUR_JWT" `
   -d '{
-    "query": "What is your refund policy? I want to cancel my order.",
+    "query": "用户询问退款政策，并希望取消订单。",
     "source_type": "ticket",
     "source_id": "TKT-12345"
   }'
 ```
 
-响应：`{ "answer": "...", "decision": "PASS"|"ASK_USER"|"ESCALATE", "followup_questions": [], "citations": [...], "confidence": 0.9 }`
+响应会包含：
 
-### 摄取文档
-
-```bash
-curl -X POST http://localhost:8000/v1/admin/ingest \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-API-Key: admin-key" \
-  -d '{
-    "documents": [
-      {
-        "url": "https://example.com/refund-policy",
-        "title": "Refund Policy",
-        "raw_text": "Full refund within 30 days...",
-        "doc_type": "policy"
-      }
-    ]
-  }'
+```json
+{
+  "answer": "...",
+  "decision": "PASS",
+  "followup_questions": [],
+  "citations": [],
+  "confidence": 0.9
+}
 ```
 
-## 配置
+`decision` 可能为 `PASS`、`ASK_USER` 或 `ESCALATE`。
 
-### 选择中国模型
+### 会话聊天示例
 
-本项目的 LLM 网关使用 OpenAI-compatible Chat Completions 接口。进入前端 **Settings → LLM 配置** 后，可以在“模型供应商预设”中选择 DeepSeek、阿里云百炼/Qwen、智谱 GLM、月之暗面/Kimi 或硅基流动。选择预设会自动填入主模型、备用模型、经济模型和 Base URL；你仍然可以手动修改模型名，以适配厂商最新模型或私有中转服务。
-
-运行时优先使用数据库中的 Settings 配置；当数据库配置为空时，才回退到 `.env` / `.env.example` 中的 `LLM_MODEL`、`LLM_FALLBACK_MODEL`、`LLM_MODEL_ECONOMY`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`。
-
-常用 OpenAI-compatible Base URL：
-
-| 供应商 | Base URL | 示例模型 |
-|--------|----------|----------|
-| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
-| 阿里云百炼/Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus`、`qwen-turbo` |
-| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus`、`glm-4-flash` |
-| 月之暗面/Kimi | `https://api.moonshot.cn/v1` | `kimi-k2.5`、`moonshot-v1-32k` |
-| 硅基流动 | `https://api.siliconflow.cn/v1` | 使用模型广场中的完整模型名 |
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `postgresql+asyncpg://...` | PostgreSQL（异步） |
-| `DATABASE_URL_SYNC` | `postgresql://...` | PostgreSQL（同步，Celery） |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis |
-| `OPENSEARCH_HOST` | `http://localhost:9200` | OpenSearch |
-| `QDRANT_HOST` | `localhost` | Qdrant |
-| `OPENAI_API_KEY` | - | embeddings/LLM 必需 |
-| `API_KEY` | - | API 认证（空值 = 开发模式） |
-| `ADMIN_API_KEY` | - | 管理员认证 |
-| `JWT_SECRET` | `change-me-in-production` | JWT 签名密钥（生产环境必需） |
-| `JWT_EXPIRE_MINUTES` | `10080`（7 天） | JWT 过期时间 |
-| `OBJECT_STORAGE_URL` | - | MinIO/S3（例如 http://minio:9000） |
-| `LLM_MODEL` | `gpt-5.2` | LLM 模型 |
-| `LLM_MAX_TOKENS` | `2048` | 最大 tokens |
-| `APP_NAME` | - | 用于 branding 的公司/应用名称（问候语、标题） |
-| `NORMALIZER_DOMAIN_TERMS` | - | 逗号分隔的实体术语（例如 vps,windows,linux,pricing） |
-| `NORMALIZER_SLOTS_ENABLED` | `false` | 启用 slot 提取（product_type、os、billing_cycle、region） |
-| `NORMALIZER_SLOT_PRODUCT_TYPES` | - | slot 的产品类型（例如 vps,dedicated,vds）。空值 = 禁用 |
-| `NORMALIZER_SLOT_OS_TYPES` | - | os slot 的系统类型（例如 windows,linux,macos）。空值 = 禁用 |
-| `CORS_ORIGINS` | `*` | 允许的 CORS origins，逗号分隔（例如 `https://app.example.com`）。`*` = 全部允许（开发环境） |
-| `DOCS_ENABLED` | `true` | 启用 `/docs` 和 `/redoc`。生产环境可设为 `false` 隐藏 API 文档 |
-
-## 脚本
-
-| Script | Description |
-|--------|-------------|
-| `scripts/init_db.py` | 创建 DB 并运行迁移 |
-| `scripts/create_admin_user.py` | 创建初始管理员用户（迁移 011 后运行） |
-| `scripts/ingest_from_source.py` | 从 source/ 摄取文档 |
-| `scripts/ingest_tickets_from_source.py` | 从 sample_conversations.json 摄取工单 |
-| `scripts/import_whmcs_sql_dump_to_tickets.py` | 从 source/*.sql 导入工单 |
-| `scripts/crawl_whmcs_tickets.py` | 抓取 WHMCS 工单（CLI） |
-| `scripts/whmcs_login_browser.py` | 打开浏览器登录 WHMCS 并获取 cookies |
-
-### Makefile 命令
-
-```bash
-make init-db       # 运行迁移
-make create-admin  # 创建管理员用户
-make ingest        # 从 source/ 摄取文档
-make ingest-dry    # Dry run：加载文档但不摄取
-make import-whmcs  # 从 source/*.sql 导入 WHMCS 工单
-make import-whmcs-dry  # Dry run：验证 SQL 解析
+```powershell
+curl -X POST http://localhost:8000/v1/conversations `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer YOUR_JWT" `
+  -d '{"source_type": "ticket", "source_id": "TKT-12345", "metadata": {}}'
 ```
 
-## 前端
-
-```bash
-cd frontend && npm install && npm run dev
-# http://localhost:5173
+```powershell
+curl -X POST http://localhost:8000/v1/conversations/{CONVERSATION_ID}/messages `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer YOUR_JWT" `
+  -d '{"content": "请根据我们的政策回复这个退款问题。"}'
 ```
 
-或使用 Docker：`docker-compose up -d frontend` → http://localhost:5174
+## 认证方式
 
-**主要页面**：Login、Conversations、Sample conversations（tickets）、Documents、Crawl（WHMCS）、Dashboard、Intents、Doc Types、Settings、API Tokens、API Reference。
+API 支持三类认证：
+
+| 方式 | Header | 适用场景 |
+|---|---|---|
+| Bearer JWT | `Authorization: Bearer <token>` | 前端登录、普通业务 API、管理员 JWT。 |
+| API Key | `X-API-Key: <key>` | 外部系统集成；可来自环境变量 `API_KEY` 或 DB token。 |
+| Admin API Key | `X-Admin-API-Key: <key>` | 管理和入库接口；来自环境变量 `ADMIN_API_KEY`。 |
+
+生产环境必须设置强 `JWT_SECRET`，并限制 `CORS_ORIGINS`。`DOCS_ENABLED=false` 可隐藏 `/docs` 和 `/redoc`，但 `/openapi.json` 会保留给前端 API Reference 使用。
+
+## 配置说明
+
+### LLM 和 Embedding
+
+运行时优先读取数据库中的 Settings 配置；数据库为空时回退到 `.env`。
+
+关键变量：
+
+| 变量 | 说明 |
+|---|---|
+| `OPENAI_API_KEY` | LLM/embedding 默认 API key。 |
+| `OPENAI_BASE_URL` | OpenAI-compatible base URL。 |
+| `LLM_MODEL` | 主生成模型。 |
+| `LLM_FALLBACK_MODEL` | 主模型失败时的备用模型。 |
+| `LLM_MODEL_ECONOMY` | normalizer、evidence、polish 等轻量任务模型。 |
+| `EMBEDDING_PROVIDER` | `openai`、`custom` 或 `ollama`。 |
+| `EMBEDDING_MODEL` | embedding 模型名。 |
+| `EMBEDDING_DIMENSIONS` | 向量维度，必须与 Qdrant collection 一致。 |
+
+常见 OpenAI-compatible provider：
+
+| 供应商 | Base URL 示例 |
+|---|---|
+| DeepSeek | `https://api.deepseek.com` |
+| 阿里云百炼 / Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` |
+| 月之暗面 / Kimi | `https://api.moonshot.cn/v1` |
+| 硅基流动 | `https://api.siliconflow.cn/v1` |
+
+### 检索和 RAG 开关
+
+常用配置入口：
+
+| 变量或配置 | 说明 |
+|---|---|
+| `RETRIEVAL_TOP_N` | 每个检索源召回候选数。 |
+| `RETRIEVAL_FUSION` | `rrf` 或 `simple` 融合策略。 |
+| `RETRIEVAL_RRF_K` | RRF 排名常数。 |
+| `MAX_RETRIEVAL_ATTEMPTS` | 最大检索尝试次数。 |
+| `EVIDENCE_SELECTOR_USE_LLM` | 是否用 LLM 做 coverage-aware evidence selection。 |
+| `EVIDENCE_QUALITY_USE_LLM` | 是否用 LLM 做证据质量门控。 |
+| `GENERATE_REASONING_ENABLED` | 生成最终答案前是否做内部 reasoning prepass。 |
+| `SELF_CRITIC_ENABLED` | 是否启用 self-critic。 |
+| `FINAL_POLISH_ENABLED` | 是否启用最终润色。 |
+| `PIPELINE_LOGGING_ENABLED` | 是否记录 RAG 各阶段日志。 |
+
+### 基础设施
+
+| 变量 | 说明 |
+|---|---|
+| `DATABASE_URL` / `DATABASE_URL_SYNC` | PostgreSQL 异步和同步连接。 |
+| `REDIS_URL` / `CELERY_BROKER_URL` | Redis 缓存、Celery broker/backend。 |
+| `OPENSEARCH_HOST` | OpenSearch 地址。 |
+| `QDRANT_HOST` / `QDRANT_PORT` | Qdrant 地址。 |
+| `OBJECT_STORAGE_URL` | MinIO/S3 endpoint。 |
+| `OBJECT_STORAGE_BUCKET` | 默认 `support-ai-docs`。 |
+
+## 常用命令
+
+### Docker
+
+```powershell
+docker-compose up -d
+docker-compose ps
+docker-compose logs api
+docker-compose logs worker
+docker-compose --profile full up -d
+```
+
+### 数据库和管理员
+
+```powershell
+docker-compose exec api alembic upgrade head
+docker-compose exec api python -m scripts.create_admin_user
+make init-db
+make create-admin
+```
+
+### 入库
+
+```powershell
+make ingest
+make ingest-dry
+python scripts/ingest_from_source.py
+python scripts/ingest_from_source.py --dry-run
+python scripts/ingest_tickets_from_source.py
+```
+
+### WHMCS
+
+```powershell
+make import-whmcs-dry
+make import-whmcs
+python scripts/crawl_whmcs_tickets.py
+python scripts/whmcs_login_browser.py
+```
+
+### 后端和前端开发
+
+```powershell
+uvicorn app.main:app --reload
+celery -A worker.celery_app worker --loglevel=info
+pytest tests/ -v
+```
+
+```powershell
+cd frontend
+npm run dev
+npm run build
+npm run preview
+```
 
 ## 项目结构
 
-```
+```text
 app/
-  main.py              # FastAPI app
-  api/routes/          # auth、conversations、reply、tickets、documents、admin、health、dashboard
-  services/            # retrieval、LLM、ingestion、ticket_db、ticket_loaders、source_loaders
-  search/              # OpenSearch、Qdrant、reranker、embeddings
-  crawlers/            # WHMCS 爬虫（Playwright）
-  db/                  # Models、session
-  core/                # Config、auth、logging、rate limit、tracing、gateway
+  main.py                 FastAPI 应用入口，注册 /v1 路由和中间件
+  api/routes/             auth、conversations、reply、documents、tickets、admin、dashboard、health
+  core/                   config、auth、gateway、logging、metrics、rate limit、tracing
+  db/                     SQLAlchemy models、session
+  services/               RAG 编排、入库、检索、LLM、配置、工单同步、URL 抓取
+  services/phases/        retrieve、assess、decide、generate、verify 等 RAG 阶段
+  search/                 OpenSearch、Qdrant、embedding、reranker
+  crawlers/               WHMCS Playwright 爬虫
 worker/
-  celery_app.py
-  tasks.py             # 摄取任务
-frontend/              # React + Vite（CRUD、chat、crawl UI）
-alembic/              # 迁移
-scripts/               # init_db、create_admin_user、ingest_from_source、ingest_tickets_from_source、import_whmcs_sql_dump_to_tickets、crawl_whmcs_tickets、whmcs_login_browser
-source/                # sample_docs.json、sample_conversations.json、custom_docs.json、*.sql
+  celery_app.py           Celery app
+  tasks.py                异步入库任务
+frontend/
+  src/App.tsx             前端路由和主导航
+  src/pages/              会话、文档、仪表盘、设置、Token、API 参考等页面
+alembic/                  数据库迁移
+scripts/                  初始化、入库、WHMCS 导入和调试脚本
+source/                   运行时知识源文件目录
+nginx/                    full profile 网关配置
+.agent-harness/           Codex 项目地图、服务地图、RAG 流程和变更约束文档
 ```
 
-## 测试
+## 测试与验证
 
-```bash
+后端：
+
+```powershell
 pip install -e ".[dev]"
 pytest tests/ -v
 ```
+
+前端：
+
+```powershell
+cd frontend
+npm run build
+```
+
+文档-only 修改通常不需要启动服务；检查 Markdown 文件存在、标题结构和关键路径即可。
+
+## 故障排查
+
+| 问题 | 排查建议 |
+|---|---|
+| `docker-compose up` 启动失败 | 检查 `.env` 是否设置 `JWT_SECRET`；查看 `docker-compose logs api`。 |
+| 前端无法登录 | 确认已运行迁移和 `create_admin_user`，并检查 JWT 配置。 |
+| API 返回 401 | 检查 Bearer JWT、`X-API-Key` 或 `X-Admin-API-Key` 是否正确。 |
+| 入库后检索不到内容 | 先运行 `make ingest-dry` 检查 source 格式，再看 api/worker 日志和 OpenSearch/Qdrant 状态。 |
+| 切换 embedding 模型后检索异常 | 确认 `EMBEDDING_DIMENSIONS` 与 Qdrant collection 维度一致，必要时重新建索引并重新入库。 |
+| WHMCS 抓取失败 | cookie 可能过期；重新登录 WHMCS，确认 base URL、list path 和 login path。 |
+| LLM 无响应或模型错误 | 检查 Settings 中 LLM 配置、`.env` fallback、`OPENAI_BASE_URL` 和 provider 模型名。 |
+| 答案被追问或转人工 | 查看 `debug_metadata`、pipeline 日志、EvidenceSet 和 reviewer 结果，确认知识库证据是否足够。 |
+
+## 维护约定
+
+- README 是当前主要入口文档；历史 README 或 README_zh 说明以本文件为准。
+- 修改 RAG 查询链路时，同步检查 `.agent-harness/02_RAG_FLOW.md`。
+- 修改服务拓扑、端口或依赖服务时，同步检查 `.agent-harness/01_SERVICE_MAP.md`。
+- 修改脚本、测试或运行命令时，同步检查 `.agent-harness/03_DEV_COMMANDS.md`。
+- 不要在未确认环境的情况下运行清库、删除 volume、生产抓取或大规模重建索引命令。
