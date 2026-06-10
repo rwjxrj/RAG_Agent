@@ -41,6 +41,7 @@ from app.services.phases import (
 from app.services.retrieval import RetrievalService
 from app.services.schemas import AnswerOutput, QuerySpec
 from app.services.reviewer import ReviewerGate
+from app.services.trace_collector import TraceCollector
 
 __all__ = ["AnswerOutput", "AnswerService"]
 
@@ -94,14 +95,26 @@ class AnswerService:
         """Generate grounded answer with retrieval and reviewer gate."""
         total_started = time.perf_counter()
         phase_timings: dict[str, float] = {}
+        trace = TraceCollector(trace_id=trace_id, source="reply")
+        trace.start_node("intent_cache")
 
         def _finish(output: AnswerOutput, *, retry_count: int = 0) -> AnswerOutput:
             phase_timings["total"] = time.perf_counter() - total_started
-            return _attach_answer_runtime_debug(
+            output = _attach_answer_runtime_debug(
                 output,
                 phase_timings,
                 retry_count=retry_count,
             )
+            output.debug = output.debug or {}
+            trace.set_tool_result(
+                decision=output.decision,
+                citations_count=len(output.citations or []),
+                followup_count=len(output.followup_questions or []),
+                confidence=output.confidence,
+            )
+            trace.set_latency(phase_timings)
+            output.debug["trace"] = trace.to_debug()
+            return output
 
         from app.core.tracing import llm_usage_var, llm_call_log_var
         llm_usage_var.set([])
@@ -113,6 +126,9 @@ class AnswerService:
 
         intent = match_intent(query)
         if intent:
+            trace.set_intent(True, intent.intent)
+            trace.complete_node("intent_cache")
+            trace.skip_node("agentic_router", reason="intent_cache_hit")
             _pipeline_log("answer_service", "intent_cache_hit", intent=intent.intent, trace_id=trace_id)
             logger.debug("intent_cache_hit", intent=intent.intent)
             return _finish(AnswerOutput(
@@ -131,6 +147,9 @@ class AnswerService:
                 },
             ))
 
+        trace.set_intent(False)
+        trace.skip_node("intent_cache", reason="miss")
+        trace.start_node("agentic_router")
         try:
             agentic_decision = self._agentic_router.route(AgenticRouterInput(
                 query=query,
@@ -142,10 +161,32 @@ class AnswerService:
             agentic_decision = AgenticRouter.safe_fallback("router_exception")
 
         agentic_debug = agentic_decision.to_debug()
+        agentic_trace_result = {
+            "route": agentic_decision.route,
+            "tool": agentic_decision.tool,
+            "confidence": agentic_decision.confidence,
+            "fallback_to_rag": agentic_decision.fallback_to_rag,
+        }
+        if agentic_decision.fallback_to_rag:
+            trace.fallback_node(
+                "agentic_router",
+                reason=agentic_decision.reason,
+                selected_tool=agentic_decision.tool,
+                decision_reason=agentic_decision.reason,
+                tool_result=agentic_trace_result,
+            )
+        else:
+            trace.complete_node(
+                "agentic_router",
+                selected_tool=agentic_decision.tool,
+                decision_reason=agentic_decision.reason,
+                tool_result=agentic_trace_result,
+            )
 
         if agentic_decision.route == AgenticRoute.DIRECT_RESPONSE:
             app_name = (self._settings.app_name or "").strip()
             answer = f"你好，欢迎使用 {app_name} 客服。有什么可以帮你？" if app_name else "你好，有什么可以帮你？"
+            trace.complete_node("direct_response", tool_result={"decision": "PASS"})
             return _finish(AnswerOutput(
                 decision="PASS",
                 answer=answer,
@@ -157,6 +198,10 @@ class AnswerService:
 
         if agentic_decision.route == AgenticRoute.CLARIFY:
             followups = agentic_decision.clarifying_questions[:3] or ["请补充更多关键信息。"]
+            trace.complete_node(
+                "clarify",
+                tool_result={"decision": "ASK_USER", "followup_count": len(followups)},
+            )
             return _finish(AnswerOutput(
                 decision="ASK_USER",
                 answer="我还需要一点信息才能准确处理这个问题。",
@@ -167,6 +212,7 @@ class AnswerService:
             ))
 
         if agentic_decision.route == AgenticRoute.HUMAN_HANDOFF:
+            trace.complete_node("human_handoff", tool_result={"decision": "ESCALATE"})
             return _finish(AnswerOutput(
                 decision="ESCALATE",
                 answer="这个请求需要人工客服处理，我会将问题转交给人工跟进。",
@@ -176,6 +222,7 @@ class AnswerService:
                 debug={"trace_id": trace_id, "agentic_router": agentic_debug},
             ))
 
+        trace.start_node("query_extract")
         query_extract_started = time.perf_counter()
         source_lang = detect_language(query) if get_language_detect_enabled() else "en"
         query_spec: QuerySpec | None = None
@@ -197,6 +244,7 @@ class AnswerService:
             "query_extract",
             time.perf_counter() - query_extract_started,
         )
+        trace.complete_node("query_extract")
 
         effective_query = query
         if query_spec and query_spec.canonical_query_en:
@@ -209,6 +257,7 @@ class AnswerService:
             if not canned:
                 app_name = (self._settings.app_name or "").strip()
                 canned = f"你好，欢迎使用 {app_name} 客服。有什么可以帮你？" if app_name else "你好，有什么可以帮你？"
+            trace.complete_node("direct_response", tool_result={"decision": "PASS"})
             return _finish(AnswerOutput(
                 decision="PASS",
                 answer=canned,
@@ -258,6 +307,12 @@ class AnswerService:
         )
 
         output = await self._orchestrator.run(ctx, self)
+        trace.complete_node("retrieve")
+        trace.complete_node("assess_evidence")
+        if ctx.retrieval_attempt > 1:
+            trace.complete_node("retry")
+        trace.complete_node("generate")
+        trace.complete_node("verify")
         output.debug = output.debug or {}
         output.debug["agentic_router"] = agentic_debug
         return _finish(output, retry_count=ctx.retrieval_attempt)

@@ -541,8 +541,46 @@ export interface Conversation {
   created_at: string
 }
 
+export type TraceNodeStatus = 'pending' | 'running' | 'completed' | 'skipped' | 'failed' | 'fallback'
+
+export interface TraceNode {
+  id: string
+  label?: string
+  status: TraceNodeStatus | string
+  latency_ms?: number | null
+  selected_tool?: string | null
+  decision_reason?: string | null
+  reason?: string | null
+  tool_result?: Record<string, unknown> | null
+}
+
+export interface TraceSnapshot {
+  trace_id?: string | null
+  source?: string
+  status?: string
+  intent?: { matched?: boolean; key?: string | null }
+  selected_tool?: string | null
+  decision_reason?: string | null
+  node_path?: string[]
+  tool_result?: Record<string, unknown>
+  latency?: { total_ms?: number | null; nodes?: Record<string, number> }
+  nodes?: TraceNode[]
+}
+
+export interface TraceEventData {
+  trace_id?: string | null
+  node_id?: string | null
+  status?: TraceNodeStatus | string
+  node_path?: string[]
+  selected_tool?: string | null
+  decision_reason?: string | null
+  latency_ms?: number | null
+  tool_result?: Record<string, unknown> | null
+}
+
 export interface FlowDebug {
   trace_id?: string
+  trace?: TraceSnapshot
   attempt?: number
   model_used?: string
   decision?: string
@@ -560,6 +598,14 @@ export interface FlowDebug {
   reviewer_reasons?: string[]
   max_attempts_reached?: boolean
   intent_cache?: string
+  agentic_router?: {
+    route?: string
+    tool?: string
+    reason?: string
+    confidence?: number
+    skipped?: boolean
+    fallback_to_rag?: boolean
+  }
   /** archi_v3: detected input language */
   source_lang?: string
   /** archi_v3: evidence evaluator result */

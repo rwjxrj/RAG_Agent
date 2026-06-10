@@ -1,0 +1,19 @@
+workflow: full
+phase: verify
+build_mode: executing-plans
+isolation: branch
+verify_mode: full
+base_ref: 89a37ac22ed26e59abcece71f1294e55af9cdf2e
+design_doc: docs/superpowers/specs/2026-06-10-rag-trace-visualization-design.md
+plan: docs/superpowers/plans/2026-06-10-rag-trace-visualization.md
+build_pause: null
+verify_result: pending
+verification_report: docs/superpowers/reports/2026-06-10-rag-trace-visualization-verify.md
+branch_status: pending
+created_at: 2026-06-10
+verified_at: null
+archived: false
+handoff_context: openspec/changes/rag-trace-visualization/.comet/handoff/design-context.json
+handoff_hash: 41a4ec14ede55aef106e8d5e5ffef2812e1b855e1a667081c200bc86555caaeb
+build_command: "pytest tests/test_trace_collector.py tests/test_answer_service.py tests/test_agentic_router.py tests/test_agentic_router_entrypoints.py -q && cd frontend && npm run build && cd .. && openspec validate rag-trace-visualization --strict"
+verify_command: "pytest tests/test_trace_collector.py tests/test_answer_service.py tests/test_agentic_router.py tests/test_agentic_router_entrypoints.py -q && cd frontend && npm run build && cd .. && openspec validate rag-trace-visualization --strict"

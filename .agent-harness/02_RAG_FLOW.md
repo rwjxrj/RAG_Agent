@@ -138,10 +138,13 @@ flowchart TD
 | `POST /v1/conversations/{id}/messages` | 已创建会话中的同步问答。 | 保存 user message、assistant message、citations、debug_metadata。 |
 | `POST /v1/conversations/{id}/messages:stream` | SSE 流式返回。 | 生成完成后保存 assistant message 和 citations。 |
 
+流式入口除既有 `status`、`ping`、`content`、`citations`、`done`、`error` 事件外，可额外输出 `trace` 事件，事件数据来自 `debug_metadata.trace.nodes` 的节点摘要。旧客户端可以忽略未知 `trace` 类型，仍按原有答案事件完成渲染。
+
 ### 查询 debug_metadata
 - `debug_metadata.timings` 会返回 `query_extract`、`retrieve`、`assess_evidence`、`rerank`、`generate`、`verify`、`total` 的秒级耗时；这些字段也会作为 `debug_metadata` 顶层字段返回，缺失阶段以 `0.0` 返回。
 - `debug_metadata.retry_count` 返回实际发生的检索重试次数，不改变 RAG 分支逻辑。
 - `debug_metadata.agentic_router` 是可选字段：intent cache 命中时只标记 `skipped=true` 和 `reason=intent_cache_hit`；Router 执行时记录 `route`、`tool`、`reason`、`confidence`、`skipped` 和 `fallback_to_rag`。顶层 API 字段不因该字段改变。
+- `debug_metadata.trace` 是可选执行快照：记录 intent、Agentic Router 选择、稳定逻辑节点路径、工具摘要和毫秒级耗时，用于前端流程可视化和调试，不改变 RAG 决策、答案生成或顶层 API 字段。
 
 ### Agentic Router 接入点
 

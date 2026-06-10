@@ -10,6 +10,9 @@ import {
   type ConversationDetail as ConvDetail,
   type Message,
   type FlowDebug,
+  type TraceEventData,
+  type TraceNode,
+  type TraceSnapshot,
 } from '../api/client'
 import {
   ArrowLeft,
@@ -40,6 +43,7 @@ export default function ConversationDetail() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
+  const [streamTrace, setStreamTrace] = useState<TraceSnapshot | null>(null)
   const [useStreaming, setUseStreaming] = useState(true)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -73,6 +77,7 @@ export default function ConversationDetail() {
     setSending(true)
     setError(null)
     setStreamingContent('')
+    setStreamTrace(null)
 
     try {
       if (useStreaming) {
@@ -92,12 +97,18 @@ export default function ConversationDetail() {
             for (const ev of events) {
               const m = ev.match(/^data:\s*(.+)$/m)
               if (m) {
-                let data: { type?: string; data?: string } | null = null
+                let data: { type?: string; data?: unknown } | null = null
                 try {
                   data = JSON.parse(m[1])
                 } catch {}
-                if (data?.type === 'content') setStreamingContent((prev) => prev + (data.data || ''))
-                else if (data?.type === 'error') throw new Error(data.data || '生成回复失败')
+                if (data?.type === 'content') setStreamingContent((prev) => prev + String(data.data || ''))
+                else if (data?.type === 'trace') {
+                  const traceEvent = data.data
+                  if (isTraceEventData(traceEvent)) {
+                    setStreamTrace((prev) => mergeTraceEvent(prev, traceEvent))
+                  }
+                }
+                else if (data?.type === 'error') throw new Error(String(data.data || '生成回复失败'))
                 else if (data?.type === 'done') {
                   streamDone = true
                   break
@@ -118,6 +129,7 @@ export default function ConversationDetail() {
     } finally {
       setSending(false)
       setStreamingContent('')
+      setStreamTrace(null)
     }
   }
 
@@ -195,6 +207,7 @@ export default function ConversationDetail() {
             </div>
             <div className="glass rounded-2xl rounded-tl-lg px-4 py-3.5 max-w-[85%]">
               <div className="text-zinc-200 whitespace-pre-wrap text-sm leading-relaxed">{streamingContent}</div>
+              <TraceTimeline trace={streamTrace} />
               <span className="inline-block w-2 h-4 ml-0.5 bg-violet-400 animate-pulse" />
             </div>
           </div>
@@ -216,6 +229,7 @@ export default function ConversationDetail() {
                 </div>
                 正在思考...
               </div>
+              <TraceTimeline trace={streamTrace} />
             </div>
           </div>
         )}
@@ -286,7 +300,7 @@ function MessageBubble({ message }: { message: Message }) {
   const [showFlow, setShowFlow] = useState(false)
   const debug = message.debug
   const hasDebug = debug && (
-    debug.decision != null || debug.confidence != null || debug.trace_id ||
+    debug.trace || debug.agentic_router || debug.decision != null || debug.confidence != null || debug.trace_id ||
     debug.source_lang || debug.evidence_eval || debug.self_critic_regenerated || debug.final_polish_applied ||
     (debug.stage_reasons && debug.stage_reasons.length > 0) || debug.termination_reason ||
     debug.conversation_relevance
@@ -395,6 +409,25 @@ function ConfidenceBadge({ value }: { value: number }) {
 function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
   return (
     <div className="mt-2 glass rounded-2xl overflow-hidden text-xs animate-slide-up">
+      {debug.trace && (
+        <DebugSection icon={<Zap size={13} />} title="执行 Trace">
+          <TraceTimeline trace={debug.trace} />
+        </DebugSection>
+      )}
+
+      {debug.agentic_router && (
+        <DebugSection icon={<Brain size={13} />} title="Agentic Router">
+          <div className="space-y-1.5 text-zinc-400">
+            {debug.agentic_router.route && <div>路由：<span className="text-zinc-300">{debug.agentic_router.route}</span></div>}
+            {debug.agentic_router.tool && <div>工具：<span className="text-zinc-300">{debug.agentic_router.tool}</span></div>}
+            {debug.agentic_router.reason && <div>原因：<span className="text-zinc-300">{debug.agentic_router.reason}</span></div>}
+            {debug.agentic_router.confidence != null && <div>置信度：<span className="text-zinc-300">{(debug.agentic_router.confidence * 100).toFixed(1)}%</span></div>}
+            {debug.agentic_router.fallback_to_rag && <div className="text-amber-400">已回退到 RAG</div>}
+            {debug.agentic_router.skipped && <div className="text-zinc-500">已跳过</div>}
+          </div>
+        </DebugSection>
+      )}
+
       {(debug.stage_reasons && debug.stage_reasons.length > 0) || debug.termination_reason ? (
         <DebugSection icon={<Zap size={13} />} title="决策路径">
           <div className="space-y-1.5 text-zinc-400">
@@ -662,6 +695,124 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
       )}
     </div>
   )
+}
+
+function isTraceEventData(value: unknown): value is TraceEventData {
+  return Boolean(value && typeof value === 'object')
+}
+
+function mergeTraceEvent(prev: TraceSnapshot | null, event: TraceEventData): TraceSnapshot {
+  const nodeId = event.node_id || 'unknown'
+  const existingNodes = prev?.nodes ?? []
+  const nextNode: TraceNode = {
+    id: nodeId,
+    label: traceNodeLabel(nodeId),
+    status: event.status || 'running',
+    latency_ms: event.latency_ms,
+    selected_tool: event.selected_tool,
+    decision_reason: event.decision_reason,
+    tool_result: event.tool_result,
+  }
+  const nodes = existingNodes.some((node) => node.id === nodeId)
+    ? existingNodes.map((node) => node.id === nodeId ? { ...node, ...nextNode } : node)
+    : [...existingNodes, nextNode]
+  return {
+    ...(prev ?? {}),
+    trace_id: event.trace_id ?? prev?.trace_id,
+    selected_tool: event.selected_tool ?? prev?.selected_tool,
+    decision_reason: event.decision_reason ?? prev?.decision_reason,
+    node_path: event.node_path ?? prev?.node_path ?? nodes.map((node) => node.id),
+    nodes,
+  }
+}
+
+function TraceTimeline({ trace }: { trace?: TraceSnapshot | null }) {
+  if (!trace) return null
+  const nodes: TraceNode[] = trace.nodes?.length
+    ? trace.nodes
+    : (trace.node_path ?? []).map((id) => ({
+        id,
+        label: traceNodeLabel(id),
+        status: 'completed',
+        latency_ms: trace.latency?.nodes?.[id],
+        selected_tool: null,
+        decision_reason: null,
+        tool_result: null,
+      }))
+  if (!nodes.length) return null
+  return (
+    <div className="mt-2 rounded-xl border border-sky-100 bg-sky-50 p-3 text-xs">
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-zinc-500">
+        {trace.selected_tool && <span>工具：<span className="text-zinc-300">{trace.selected_tool}</span></span>}
+        {trace.decision_reason && <span>原因：<span className="text-zinc-300 break-all">{trace.decision_reason}</span></span>}
+        {trace.latency?.total_ms != null && <span>耗时：<span className="text-zinc-300">{trace.latency.total_ms}ms</span></span>}
+        {trace.intent?.matched && trace.intent.key && <span>意图：<span className="text-zinc-300">{trace.intent.key}</span></span>}
+      </div>
+      <ol className="space-y-1.5">
+        {nodes.map((node) => (
+          <li key={node.id} className="flex min-w-0 items-center gap-2">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${traceStatusClass(node.status)}`} />
+            <span className="min-w-0 flex-1 truncate text-zinc-300">{node.label || traceNodeLabel(node.id)}</span>
+            {node.selected_tool && <span className="hidden shrink-0 text-zinc-500 sm:inline">{node.selected_tool}</span>}
+            {node.latency_ms != null && <span className="shrink-0 text-zinc-500">{node.latency_ms}ms</span>}
+            <span className="shrink-0 text-zinc-500">{traceStatusLabel(node.status)}</span>
+          </li>
+        ))}
+      </ol>
+      {trace.tool_result && Object.keys(trace.tool_result).length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2 text-zinc-500">
+          {traceToolResultSummary(trace.tool_result).map((item) => (
+            <span key={item} className="rounded-lg border border-sky-100 bg-white px-2 py-1">{item}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function traceNodeLabel(id: string) {
+  const labels: Record<string, string> = {
+    guardrails: '安全检查',
+    intent_cache: '意图缓存',
+    agentic_router: 'Agentic Router',
+    query_extract: '问题理解',
+    retrieve: '知识检索',
+    assess_evidence: '证据评估',
+    retry: '检索重试',
+    generate: '生成回答',
+    verify: '回答校验',
+    direct_response: '直接回复',
+    clarify: '追问用户',
+    human_handoff: '转人工',
+  }
+  return labels[id] || id.replace(/_/g, ' ')
+}
+
+function traceStatusClass(status?: string) {
+  if (status === 'completed') return 'bg-emerald-400'
+  if (status === 'running') return 'bg-violet-400 animate-pulse'
+  if (status === 'skipped') return 'bg-zinc-500'
+  if (status === 'fallback') return 'bg-amber-400'
+  if (status === 'failed') return 'bg-red-400'
+  return 'bg-zinc-600'
+}
+
+function traceStatusLabel(status?: string) {
+  if (status === 'completed') return '完成'
+  if (status === 'running') return '执行中'
+  if (status === 'skipped') return '跳过'
+  if (status === 'fallback') return '回退'
+  if (status === 'failed') return '失败'
+  return status || '待执行'
+}
+
+function traceToolResultSummary(result: Record<string, unknown>) {
+  const items: string[] = []
+  if (typeof result.decision === 'string') items.push(`决策：${result.decision}`)
+  if (typeof result.citations_count === 'number') items.push(`引用：${result.citations_count}`)
+  if (typeof result.followup_count === 'number') items.push(`追问：${result.followup_count}`)
+  if (typeof result.confidence === 'number') items.push(`置信度：${Math.round(result.confidence * 100)}%`)
+  return items.length ? items : Object.entries(result).slice(0, 4).map(([key, value]) => `${key}：${String(value)}`)
 }
 
 function DebugSection({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
