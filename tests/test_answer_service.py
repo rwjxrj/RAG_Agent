@@ -85,6 +85,32 @@ async def test_intent_cache_hit_skips_agentic_router(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_intent_cache_hit_includes_trace(monkeypatch):
+    class MatchedIntent:
+        intent = "hello"
+        answer = "intent answer"
+
+    decision = AgenticRouterDecision(
+        route=AgenticRoute.RAG_SEARCH,
+        tool="rag_search",
+        reason="support_knowledge_question",
+        confidence=0.86,
+    )
+    router = FakeRouter(decision)
+    service = make_answer_service(router=router)
+    monkeypatch.setattr("app.services.answer_service.match_intent", lambda query: MatchedIntent())
+
+    output = await service.generate("你好", trace_id="trace-intent")
+
+    trace = output.debug["trace"]
+    assert trace["intent"] == {"matched": True, "key": "hello"}
+    assert trace["selected_tool"] is None
+    assert trace["node_path"] == ["intent_cache", "agentic_router"]
+    assert trace["nodes"][0]["status"] == "completed"
+    assert trace["nodes"][1]["status"] == "skipped"
+
+
+@pytest.mark.asyncio
 async def test_direct_response_returns_pass_without_rag(monkeypatch):
     monkeypatch.setattr("app.services.answer_service.match_intent", lambda query: None)
     decision = AgenticRouterDecision(
@@ -172,6 +198,42 @@ async def test_rag_route_preserves_existing_output_debug_and_citations():
     assert output.citations == [{"chunk_id": "c1", "source_url": "https://example.com/windows"}]
     assert output.debug["existing"] is True
     assert output.debug["agentic_router"]["route"] == "rag_search"
+
+
+@pytest.mark.asyncio
+async def test_rag_route_includes_agentic_router_and_rag_trace(monkeypatch):
+    async def no_query_spec(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.answer_service.normalize_query", no_query_spec)
+    decision = AgenticRouterDecision(
+        route=AgenticRoute.RAG_SEARCH,
+        tool="rag_search",
+        reason="support_knowledge_question",
+        confidence=0.86,
+    )
+    expected = AnswerOutput(
+        decision="PASS",
+        answer="RAG answered.",
+        followup_questions=[],
+        citations=[{"chunk_id": "c1"}],
+        confidence=0.7,
+        debug={},
+    )
+    service = make_answer_service(
+        router=FakeRouter(decision),
+        orchestrator=FakeOrchestrator(output=expected),
+    )
+
+    output = await service.generate("Windows VPS 多少钱？", trace_id="trace-rag")
+
+    trace = output.debug["trace"]
+    assert trace["selected_tool"] == "rag_search"
+    assert trace["decision_reason"] == "support_knowledge_question"
+    assert "agentic_router" in trace["node_path"]
+    assert "query_extract" in trace["node_path"]
+    assert trace["tool_result"]["decision"] == "PASS"
+    assert trace["tool_result"]["citations_count"] == 1
 
 
 @pytest.mark.asyncio
