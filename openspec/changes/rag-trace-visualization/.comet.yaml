@@ -15,3 +15,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/rag-trace-visualization/.comet/handoff/design-context.json
 handoff_hash: 41a4ec14ede55aef106e8d5e5ffef2812e1b855e1a667081c200bc86555caaeb
+build_command: "pytest tests/test_trace_collector.py tests/test_answer_service.py tests/test_agentic_router.py tests/test_agentic_router_entrypoints.py -q && cd frontend && npm run build && cd .. && openspec validate rag-trace-visualization --strict"
+verify_command: "pytest tests/test_trace_collector.py tests/test_answer_service.py tests/test_agentic_router.py tests/test_agentic_router_entrypoints.py -q && cd frontend && npm run build && cd .. && openspec validate rag-trace-visualization --strict"
