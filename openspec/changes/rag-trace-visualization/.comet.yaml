@@ -2,13 +2,13 @@ workflow: full
 phase: verify
 build_mode: executing-plans
 isolation: branch
-verify_mode: null
+verify_mode: full
 base_ref: 89a37ac22ed26e59abcece71f1294e55af9cdf2e
 design_doc: docs/superpowers/specs/2026-06-10-rag-trace-visualization-design.md
 plan: docs/superpowers/plans/2026-06-10-rag-trace-visualization.md
 build_pause: null
 verify_result: pending
-verification_report: null
+verification_report: docs/superpowers/reports/2026-06-10-rag-trace-visualization-verify.md
 branch_status: pending
 created_at: 2026-06-10
 verified_at: null
