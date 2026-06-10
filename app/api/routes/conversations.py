@@ -347,6 +347,25 @@ async def send_message_stream(
                 await asyncio.sleep(10)
             output = await generate_task
 
+            trace_snapshot = (output.debug or {}).get("trace")
+            if isinstance(trace_snapshot, dict):
+                for node in trace_snapshot.get("nodes", []):
+                    if not isinstance(node, dict):
+                        continue
+                    yield sse({
+                        "type": "trace",
+                        "data": {
+                            "trace_id": trace_snapshot.get("trace_id"),
+                            "node_id": node.get("id"),
+                            "status": node.get("status"),
+                            "node_path": trace_snapshot.get("node_path", []),
+                            "selected_tool": node.get("selected_tool") or trace_snapshot.get("selected_tool"),
+                            "decision_reason": node.get("decision_reason") or trace_snapshot.get("decision_reason"),
+                            "latency_ms": node.get("latency_ms"),
+                            "tool_result": node.get("tool_result"),
+                        },
+                    })
+
             # Persist assistant message before done, so the final GET sees the message.
             debug_meta = dict(output.debug or {})
             debug_meta["decision"] = output.decision

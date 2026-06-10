@@ -200,3 +200,68 @@ async def test_stream_conversation_calls_shared_answer_service(monkeypatch):
     assert calls[0]["query"] == "你好"
     assert '"type": "done"' in payload
     assert '"decision": "PASS"' in payload
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_emits_optional_trace_event(monkeypatch):
+    async def fake_generate(self, query, conversation_history=None, trace_id=None):
+        return AnswerOutput(
+            decision="PASS",
+            answer="RAG answered.",
+            followup_questions=[],
+            citations=[],
+            confidence=0.8,
+            debug={
+                "trace": {
+                    "trace_id": trace_id,
+                    "source": "stream",
+                    "status": "completed",
+                    "selected_tool": "rag_search",
+                    "decision_reason": "support_knowledge_question",
+                    "node_path": [
+                        "intent_cache",
+                        "agentic_router",
+                        "retrieve",
+                        "generate",
+                    ],
+                    "tool_result": {
+                        "decision": "PASS",
+                        "citations_count": 0,
+                        "followup_count": 0,
+                    },
+                    "latency": {"total_ms": 10, "nodes": {}},
+                    "nodes": [
+                        {
+                            "id": "intent_cache",
+                            "label": "Intent Cache",
+                            "status": "skipped",
+                        },
+                        {
+                            "id": "agentic_router",
+                            "label": "Agentic Router",
+                            "status": "completed",
+                            "selected_tool": "rag_search",
+                        },
+                    ],
+                }
+            },
+        )
+
+    monkeypatch.setattr("app.services.answer_service.AnswerService.generate", fake_generate)
+
+    response = await conversations.send_message_stream(
+        conversation_id="conv-1",
+        body=MessageCreate(content="Windows VPS 多少钱？"),
+        db=FakeDb(),
+        _auth="test-key",
+    )
+
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+
+    payload = "".join(chunks)
+    assert '"type": "trace"' in payload
+    assert '"node_id": "agentic_router"' in payload
+    assert '"type": "content"' in payload
+    assert '"type": "done"' in payload
