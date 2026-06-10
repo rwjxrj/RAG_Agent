@@ -172,6 +172,37 @@ async def test_human_handoff_returns_escalate():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "expected_decision", "expected_node"),
+    [
+        (AgenticRoute.DIRECT_RESPONSE, "PASS", "direct_response"),
+        (AgenticRoute.CLARIFY, "ASK_USER", "clarify"),
+        (AgenticRoute.HUMAN_HANDOFF, "ESCALATE", "human_handoff"),
+    ],
+)
+async def test_non_rag_routes_include_terminal_trace(monkeypatch, route, expected_decision, expected_node):
+    monkeypatch.setattr("app.services.answer_service.match_intent", lambda query: None)
+    decision = AgenticRouterDecision(
+        route=route,
+        tool=route,
+        reason="test_reason",
+        confidence=0.8,
+        clarifying_questions=["请补充地区"] if route == AgenticRoute.CLARIFY else [],
+    )
+    service = make_answer_service(router=FakeRouter(decision))
+
+    output = await service.generate("你好", trace_id="trace-route")
+
+    trace = output.debug["trace"]
+    assert output.decision == expected_decision
+    assert trace["selected_tool"] == route
+    assert trace["decision_reason"] == "test_reason"
+    assert expected_node in trace["node_path"]
+    assert "retrieve" not in trace["node_path"]
+    assert trace["tool_result"]["decision"] == expected_decision
+
+
+@pytest.mark.asyncio
 async def test_rag_route_preserves_existing_output_debug_and_citations():
     decision = AgenticRouterDecision(
         route=AgenticRoute.RAG_SEARCH,
@@ -260,6 +291,30 @@ async def test_router_exception_falls_back_to_rag():
     assert output.answer == "RAG still answered."
     assert output.debug["agentic_router"]["reason"] == "router_exception"
     assert output.debug["agentic_router"]["fallback_to_rag"] is True
+
+
+@pytest.mark.asyncio
+async def test_router_exception_trace_marks_fallback(monkeypatch):
+    async def no_query_spec(*args, **kwargs):
+        return None
+
+    class BrokenRouter:
+        def route(self, payload):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("app.services.answer_service.normalize_query", no_query_spec)
+    service = make_answer_service(router=BrokenRouter(), orchestrator=FakeOrchestrator())
+
+    output = await service.generate("VPS 怎么配置？", trace_id="trace-fallback")
+
+    trace = output.debug["trace"]
+    assert trace["status"] == "fallback"
+    assert trace["selected_tool"] == "rag_search"
+    assert trace["decision_reason"] == "router_exception"
+    assert any(
+        node["id"] == "agentic_router" and node["status"] == "fallback"
+        for node in trace["nodes"]
+    )
 
 
 def test_collect_rewrite_candidates_dedupes_case_insensitive():

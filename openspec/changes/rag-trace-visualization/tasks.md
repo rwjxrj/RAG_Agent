@@ -20,7 +20,7 @@
 
 ## 4. 测试与验收
 
-- [ ] 4.1 增加后端测试：intent hit、`rag_search`、`direct_response`、`clarify`、`human_handoff`、低置信回退、异常回退的 trace 快照。
-- [ ] 4.2 增加流式入口测试：trace 事件可选输出且不破坏现有答案事件。
-- [ ] 4.3 增加前端测试或截图验证：时间线能展示 running、completed、skipped、fallback 状态。
-- [ ] 4.4 验证三类入口 trace 字段语义一致，外部 API 顶层字段保持兼容。
+- [x] 4.1 增加后端测试：intent hit、`rag_search`、`direct_response`、`clarify`、`human_handoff`、低置信回退、异常回退的 trace 快照。
+- [x] 4.2 增加流式入口测试：trace 事件可选输出且不破坏现有答案事件。
+- [x] 4.3 增加前端测试或截图验证：时间线能展示 running、completed、skipped、fallback 状态。
+- [x] 4.4 验证三类入口 trace 字段语义一致，外部 API 顶层字段保持兼容。
