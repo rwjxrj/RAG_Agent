@@ -4,7 +4,12 @@ import pytest
 
 from app.services.orchestrator import OrchestratorAction, OrchestratorContext
 from app.services.output_builder import build_output
-from app.services.schemas import QuerySpec, ReviewResult
+from app.services.schemas import OrchestratorDebug, QuerySpec, ReviewResult
+
+
+class _MockOrchestrator:
+    def get_model_for_query(self, query: str) -> str:
+        return "test-model"
 
 
 @pytest.mark.asyncio
@@ -23,7 +28,7 @@ async def test_build_output_done_renders_from_calibrated_candidate():
         final_lane="PASS_PARTIAL",
         suggested_retry_plan=None,
     )
-    ctx.extra["answer_candidate"] = {
+    ctx.generate_output.answer_candidate = {
         "answer_text": "Closest related official page: https://example.com/pricing/windows-vps",
         "followup_questions": ["Which billing cycle do you prefer?"],
         "disclaimers": ["Closest related official page, exact order page not verified."],
@@ -32,7 +37,7 @@ async def test_build_output_done_renders_from_calibrated_candidate():
     out = await build_output(
         ctx,
         OrchestratorAction.DONE,
-        get_model_for_query=lambda _: "test-model",
+        orchestrator=_MockOrchestrator(),
     )
 
     assert out.decision == "PASS"
@@ -69,7 +74,7 @@ async def test_build_output_reports_shadow_rollout_when_enabled(monkeypatch):
     out = await build_output(
         ctx,
         OrchestratorAction.DONE,
-        get_model_for_query=lambda _: "test-model",
+        orchestrator=_MockOrchestrator(),
     )
 
     flags = (out.debug or {}).get("rollout_flags") or {}
@@ -83,15 +88,15 @@ async def test_build_output_includes_phase_timings_and_retry_count():
         query="pricing",
         max_attempts=3,
         retrieval_attempt=2,
-        extra={
-            "phase_timings": {
+        orchestrator_debug=OrchestratorDebug(
+            phase_timings={
                 "query_extract": 0.011234,
                 "retrieve": 0.022345,
                 "assess_evidence": 0.033456,
                 "generate": 0.044567,
                 "verify": 0.055678,
-            }
-        },
+            },
+        ),
     )
     ctx.answer = "answer"
     ctx.followup = []
@@ -109,7 +114,7 @@ async def test_build_output_includes_phase_timings_and_retry_count():
     out = await build_output(
         ctx,
         OrchestratorAction.DONE,
-        get_model_for_query=lambda _: "test-model",
+        orchestrator=_MockOrchestrator(),
     )
 
     assert out.debug["retry_count"] == 2
@@ -178,7 +183,7 @@ async def test_build_output_uses_bounded_availability_fallback_after_retry_exhau
     out = await build_output(
         ctx,
         OrchestratorAction.ASK_USER,
-        get_model_for_query=lambda _: "test-model",
+        orchestrator=_MockOrchestrator(),
     )
 
     assert out.decision == "ASK_USER"
@@ -212,7 +217,7 @@ async def test_build_output_uses_bounded_availability_fallback_when_no_evidence(
     out = await build_output(
         ctx,
         OrchestratorAction.ASK_USER,
-        get_model_for_query=lambda _: "test-model",
+        orchestrator=_MockOrchestrator(),
     )
 
     assert out.decision == "ASK_USER"

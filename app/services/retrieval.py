@@ -56,6 +56,40 @@ class _VectorBundle:
     supporting: list[SearchChunk] = field(default_factory=list)
 
 
+@dataclass
+class BudgetConfig:
+    """Parsed budget_hint values from RetrievalPlan."""
+
+    plan_hint: dict[str, Any] = field(default_factory=dict)
+    hard_requirements: set[str] = field(default_factory=set)
+    page_kind_filter_enabled: bool = False
+    page_kind_weighting_enabled: bool = False
+    preferred_page_kinds: list[str] = field(default_factory=list)
+    supporting_page_kinds: list[str] = field(default_factory=list)
+    page_kind_weights: dict[str, float] = field(default_factory=dict)
+    product_family_hints: list[str] = field(default_factory=list)
+    product_family_weights: dict[str, float] = field(default_factory=dict)
+    demote_doc_types: list[str] = field(default_factory=list)
+    is_pricing_retrieval: bool = False
+    ensure_doc_types: list[str] = field(default_factory=list)
+    diversity_doc_types: list[str] = field(default_factory=list)
+    diversity_fetch_per_type: int = 6
+
+
+@dataclass
+class DocTypeStrategy:
+    """Resolved doc type strategy for a retrieval attempt."""
+
+    profile: str = "generic_profile"
+    primary_doc_types: list[str] = field(default_factory=list)
+    authoritative_doc_types: list[str] = field(default_factory=list)
+    supporting_doc_types: list[str] = field(default_factory=list)
+    include_conversation_source: bool = False
+    preferred_sources: list[str] = field(default_factory=list)
+    fetch_n: int = 20
+    rerank_k: int = 10
+
+
 class RetrievalService:
     """Hybrid retrieval with query rewrite, merge, and rerank."""
 
@@ -762,6 +796,287 @@ class RetrievalService:
 
         return bm25_bundle, vector_bundle
 
+    # ------------------------------------------------------------------
+    # Extraction helpers for retrieve()
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_budget_hints(plan: RetrievalPlan, settings: Any) -> BudgetConfig:
+        """Parse plan.budget_hint into a typed BudgetConfig. Pure function, ~80 lines saved."""
+        plan_hint = dict(getattr(plan, "budget_hint", None) or {})
+        hard_requirements = {
+            str(x) for x in (plan_hint.get("hard_requirements") or []) if isinstance(x, str)
+        }
+        try:
+            from app.services.archi_config import get_page_kind_filter_enabled
+            page_kind_filter_enabled = get_page_kind_filter_enabled()
+        except Exception:
+            page_kind_filter_enabled = getattr(settings, "page_kind_filter_enabled", False)
+        page_kind_weighting_enabled = bool(
+            getattr(settings, "retrieval_page_kind_weighting_enabled", True)
+        ) and bool(page_kind_filter_enabled)
+        preferred_page_kinds = [
+            str(x).strip().lower() for x in (plan_hint.get("preferred_page_kinds") or []) if str(x).strip()
+        ]
+        supporting_page_kinds = [
+            str(x).strip().lower() for x in (plan_hint.get("supporting_page_kinds") or []) if str(x).strip()
+        ]
+        page_kind_weights: dict[str, float] = {}
+        if isinstance(plan_hint.get("page_kind_weights"), dict):
+            for k, v in (plan_hint.get("page_kind_weights") or {}).items():
+                key = str(k).strip().lower()
+                if not key:
+                    continue
+                try:
+                    page_kind_weights[key] = float(v)
+                except (TypeError, ValueError):
+                    continue
+        product_family_hints = [
+            str(x).strip().lower() for x in (plan_hint.get("product_family_hints") or []) if str(x).strip()
+        ]
+        product_family_weights: dict[str, float] = {}
+        if isinstance(plan_hint.get("product_family_weights"), dict):
+            for k, v in (plan_hint.get("product_family_weights") or {}).items():
+                key = str(k).strip().lower()
+                if not key:
+                    continue
+                try:
+                    product_family_weights[key] = float(v)
+                except (TypeError, ValueError):
+                    continue
+        demote_doc_types = [
+            str(x).strip().lower() for x in (plan_hint.get("demote_doc_types") or []) if str(x).strip()
+        ]
+        if not page_kind_weighting_enabled:
+            preferred_page_kinds = []
+            supporting_page_kinds = []
+            page_kind_weights = {}
+            demote_doc_types = []
+        is_pricing_retrieval = bool(plan_hint.get("boost_pricing", False))
+        ensure_doc_types = [str(x).strip() for x in (plan_hint.get("ensure_doc_types") or []) if str(x).strip()]
+        diversity_doc_types = [str(x).strip() for x in (plan_hint.get("diversity_doc_types") or []) if str(x).strip()]
+        try:
+            diversity_fetch_per_type = max(
+                1,
+                int(plan_hint.get("diversity_fetch_per_type") or getattr(settings, "retrieval_diversity_fetch_per_type", 6)),
+            )
+        except Exception:
+            diversity_fetch_per_type = 6
+        return BudgetConfig(
+            plan_hint=plan_hint,
+            hard_requirements=hard_requirements,
+            page_kind_filter_enabled=page_kind_filter_enabled,
+            page_kind_weighting_enabled=page_kind_weighting_enabled,
+            preferred_page_kinds=preferred_page_kinds,
+            supporting_page_kinds=supporting_page_kinds,
+            page_kind_weights=page_kind_weights,
+            product_family_hints=product_family_hints,
+            product_family_weights=product_family_weights,
+            demote_doc_types=demote_doc_types,
+            is_pricing_retrieval=is_pricing_retrieval,
+            ensure_doc_types=ensure_doc_types,
+            diversity_doc_types=diversity_doc_types,
+            diversity_fetch_per_type=diversity_fetch_per_type,
+        )
+
+    def _resolve_doc_type_strategy(
+        self,
+        plan: RetrievalPlan,
+        requested_doc_types: list[str] | None,
+        retry_strategy: RetryStrategy | None,
+        top_n: int | None,
+        top_k: int | None,
+    ) -> DocTypeStrategy:
+        """Resolve doc type strategy from plan, requested types, and retry strategy."""
+        profile = plan.profile
+        effective_doc_types = requested_doc_types or plan.preferred_doc_types
+        if retry_strategy and retry_strategy.filter_doc_types:
+            effective_doc_types = retry_strategy.filter_doc_types
+        preferred_sources = list(plan.preferred_sources or [])
+        primary_doc_types, include_conversation_source = self._split_primary_and_secondary_doc_types(
+            effective_doc_types, preferred_sources,
+        )
+        authoritative_doc_types = [
+            str(x).strip() for x in (plan.authoritative_doc_types or primary_doc_types or []) if str(x).strip()
+        ]
+        supporting_doc_types = [
+            str(x).strip() for x in (plan.supporting_doc_types or []) if str(x).strip()
+        ]
+        if include_conversation_source and "conversation" not in supporting_doc_types:
+            supporting_doc_types.append("conversation")
+        fetch_n = plan.fetch_n or top_n or self._settings.retrieval_top_n
+        rerank_k = plan.rerank_k or top_k or self._settings.retrieval_top_k
+        return DocTypeStrategy(
+            profile=profile,
+            primary_doc_types=primary_doc_types,
+            authoritative_doc_types=authoritative_doc_types,
+            supporting_doc_types=supporting_doc_types,
+            include_conversation_source=include_conversation_source,
+            preferred_sources=preferred_sources,
+            fetch_n=fetch_n,
+            rerank_k=rerank_k,
+        )
+
+    def _calibrate_all_chunks(
+        self,
+        bm25_chunks: list[SearchChunk],
+        supporting_bm25: list[SearchChunk],
+        diversity_bm25: list[SearchChunk],
+        vector_chunks: list[SearchChunk],
+        supporting_vector: list[SearchChunk],
+        budget: BudgetConfig,
+    ) -> tuple[list[SearchChunk], list[SearchChunk], list[SearchChunk], list[SearchChunk], list[SearchChunk]]:
+        """Apply page-kind/product-family/demote calibration to all chunk lists."""
+        cal_kwargs = dict(
+            page_kind_weights=budget.page_kind_weights or None,
+            product_family_weights=budget.product_family_weights or None,
+            product_family_hints=budget.product_family_hints or None,
+            demote_doc_types=budget.demote_doc_types or None,
+        )
+        return (
+            self._apply_search_calibration(bm25_chunks, **cal_kwargs),
+            self._apply_search_calibration(supporting_bm25, **cal_kwargs),
+            self._apply_search_calibration(diversity_bm25, **cal_kwargs),
+            self._apply_search_calibration(vector_chunks, **cal_kwargs),
+            self._apply_search_calibration(supporting_vector, **cal_kwargs),
+        )
+
+    def _merge_and_inject_extras(
+        self,
+        bm25_chunks: list[SearchChunk],
+        supporting_bm25: list[SearchChunk],
+        vector_chunks: list[SearchChunk],
+        supporting_vector: list[SearchChunk],
+        extra_bm25: list[SearchChunk],
+        diversity_bm25: list[SearchChunk],
+    ) -> list[SearchChunk]:
+        """Fuse BM25 + vector results, then inject extra/diversity chunks with floor scores."""
+        if self._settings.retrieval_fusion == "rrf":
+            merged = self._merge_with_rrf(
+                self._dedupe_chunks(bm25_chunks + supporting_bm25),
+                self._dedupe_chunks(vector_chunks + supporting_vector),
+                k=self._settings.retrieval_rrf_k,
+            )
+        else:
+            merged = self._merge_simple(
+                self._dedupe_chunks(bm25_chunks + supporting_bm25),
+                self._dedupe_chunks(vector_chunks + supporting_vector),
+            )
+        if extra_bm25 or diversity_bm25:
+            seen_ids = {c.chunk_id for c in merged}
+            scores = [c.score for c in merged] if merged else [0.0]
+            median_score = sorted(scores)[len(scores) // 2] if scores else 0.01
+            for c in extra_bm25:
+                if c.chunk_id not in seen_ids:
+                    seen_ids.add(c.chunk_id)
+                    merged.append(SearchChunk(
+                        chunk_id=c.chunk_id, document_id=c.document_id,
+                        chunk_text=c.chunk_text, source_url=c.source_url,
+                        doc_type=c.doc_type, score=max(c.score, median_score * 0.9),
+                        metadata=c.metadata,
+                    ))
+            for c in diversity_bm25:
+                if c.chunk_id not in seen_ids:
+                    seen_ids.add(c.chunk_id)
+                    merged.append(SearchChunk(
+                        chunk_id=c.chunk_id, document_id=c.document_id,
+                        chunk_text=c.chunk_text, source_url=c.source_url,
+                        doc_type=c.doc_type, score=max(c.score, median_score * 0.85),
+                        metadata=c.metadata,
+                    ))
+        return merged
+
+    def _apply_conversation_penalty(
+        self, reranked: list[tuple[SearchChunk, float]]
+    ) -> list[tuple[SearchChunk, float]]:
+        """Deprioritize conversation chunks relative to docs."""
+        penalty = getattr(self._settings, "retrieval_conversation_score_penalty", 1.0)
+        if penalty < 1.0:
+            reranked = [
+                (c, (s * penalty) if (c.doc_type or "").lower() == "conversation" else s)
+                for c, s in reranked
+            ]
+            reranked = sorted(reranked, key=lambda x: x[1], reverse=True)
+        return reranked
+
+    @staticmethod
+    def _apply_exclude_patterns(
+        reranked: list[tuple[SearchChunk, float]],
+        retry_strategy: RetryStrategy | None,
+        stats: dict[str, Any],
+    ) -> list[tuple[SearchChunk, float]]:
+        """Remove chunks matching retry_strategy.exclude_patterns."""
+        if not (retry_strategy and retry_strategy.exclude_patterns):
+            return reranked
+        exclude_re = re.compile(
+            "|".join(re.escape(p) for p in retry_strategy.exclude_patterns), re.I,
+        )
+        before = len(reranked)
+        reranked = [
+            (c, s) for c, s in reranked
+            if not exclude_re.search((c.chunk_text or "")[:500])
+            and not exclude_re.search(c.source_url or "")
+        ]
+        if before > len(reranked):
+            stats["exclude_patterns_filtered"] = before - len(reranked)
+        return reranked
+
+    def _enforce_minimum_doc_types(
+        self,
+        evidence_set: EvidenceSet,
+        evidence: list[EvidenceChunk],
+        ensure_doc_types: list[str],
+        merged: list[SearchChunk],
+        rerank_k: int,
+        effective_query_spec: QuerySpec | None,
+        plan: RetrievalPlan,
+        candidate_pool: CandidatePool,
+    ) -> tuple[EvidenceSet, list[EvidenceChunk]]:
+        """Enforce minimum representation of ensure_doc_types in final evidence."""
+        min_ensure = self._settings.retrieval_ensure_doc_type_min
+        if ensure_doc_types and set(ensure_doc_types) & {"policy", "tos"}:
+            min_ensure = max(min_ensure, 3)
+        elif ensure_doc_types and set(ensure_doc_types) & {"howto", "docs", "faq"}:
+            min_ensure = max(min_ensure, 2)
+        if min_ensure <= 0 or not ensure_doc_types:
+            return evidence_set, evidence
+        ensure_set = set(ensure_doc_types)
+        count_ensure = sum(1 for e in evidence if e.doc_type in ensure_set)
+        if count_ensure >= min_ensure:
+            return evidence_set, evidence
+        need = min_ensure - count_ensure
+        evidence_ids = {e.chunk_id for e in evidence}
+        candidates = [
+            c for c in merged if c.chunk_id not in evidence_ids and c.doc_type in ensure_set
+        ]
+        for c in candidates[:need]:
+            evidence.append(EvidenceChunk(
+                chunk_id=c.chunk_id,
+                snippet=(c.chunk_text or "")[:500] + ("..." if len(c.chunk_text or "") > 500 else ""),
+                source_url=c.source_url or "",
+                doc_type=c.doc_type or "",
+                score=c.score,
+                full_text=c.chunk_text,
+            ))
+        if len(evidence) > rerank_k:
+            by_score = sorted(
+                [e for e in evidence if e.doc_type not in ensure_set],
+                key=lambda e: e.score or 0,
+            )
+            to_remove = min(len(evidence) - rerank_k, len(by_score))
+            remove_ids = {by_score[i].chunk_id for i in range(to_remove)}
+            evidence = [e for e in evidence if e.chunk_id not in remove_ids]
+        chunk_by_id = {c.chunk_id: c for c in merged}
+        reranked_rebuild = [
+            (chunk_by_id[e.chunk_id], e.score or 0)
+            for e in evidence if e.chunk_id in chunk_by_id
+        ]
+        evidence_set = build_evidence_set(
+            reranked_rebuild, effective_query_spec, plan, candidate_pool, coverage_map=None,
+        )
+        evidence = list(evidence_set.chunks)
+        return evidence_set, evidence
+
     async def retrieve(
         self,
         query: str,
@@ -775,21 +1090,19 @@ class RetrievalService:
         retrieval_plan: RetrievalPlan | None = None,
     ) -> EvidencePack:
         """Execute hybrid retrieval pipeline. Workstream 3: plan → CandidatePool → EvidenceSet."""
+        # 1. Resolve effective query
         effective_query = (
             retry_strategy.suggested_query if retry_strategy and retry_strategy.suggested_query else query
         )
         effective_query_spec = query_spec
-        requested_doc_types = doc_types
 
+        # 2. Build retrieval plan & query rewrite
         planning_debug: dict[str, Any] = {}
         if retrieval_plan is None:
             plan, planning_debug = await build_retrieval_plan_for_attempt(
-                base_query=effective_query,
-                attempt=attempt,
-                query_spec=effective_query_spec,
-                retry_strategy=retry_strategy,
-                explicit_override=None,
-                conversation_history=conversation_history,
+                base_query=effective_query, attempt=attempt,
+                query_spec=effective_query_spec, retry_strategy=retry_strategy,
+                explicit_override=None, conversation_history=conversation_history,
             )
         else:
             plan = retrieval_plan
@@ -805,282 +1118,93 @@ class RetrievalService:
         )
         try:
             from app.services.flow_debug import _pipeline_log
-            _pipeline_log(
-                "retrieval", "query_rewrite",
-                keyword_query=qr.keyword_query[:100],
-                semantic_query=qr.semantic_query[:100],
-                profile=plan.profile,
-                attempt=attempt,
-            )
+            _pipeline_log("retrieval", "query_rewrite",
+                keyword_query=qr.keyword_query[:100], semantic_query=qr.semantic_query[:100],
+                profile=plan.profile, attempt=attempt)
         except Exception:
             pass
-        # Retrieval plan is authoritative for profile/doc type strategy.
-        profile = plan.profile
-        effective_doc_types = requested_doc_types or plan.preferred_doc_types
-        if retry_strategy and retry_strategy.filter_doc_types:
-            effective_doc_types = retry_strategy.filter_doc_types
-        preferred_sources = list(plan.preferred_sources or [])
-        primary_doc_types, include_conversation_source = self._split_primary_and_secondary_doc_types(
-            effective_doc_types,
-            preferred_sources,
-        )
-        authoritative_doc_types = [
-            str(x).strip() for x in (plan.authoritative_doc_types or primary_doc_types or []) if str(x).strip()
-        ]
-        supporting_doc_types = [
-            str(x).strip() for x in (plan.supporting_doc_types or []) if str(x).strip()
-        ]
-        if include_conversation_source and "conversation" not in supporting_doc_types:
-            supporting_doc_types.append("conversation")
 
-        fetch_n = plan.fetch_n or top_n or self._settings.retrieval_top_n
-        rerank_k = plan.rerank_k or top_k or self._settings.retrieval_top_k
-        plan_hint = dict(getattr(plan, "budget_hint", None) or {})
-        hard_requirements = {
-            str(x)
-            for x in (plan_hint.get("hard_requirements") or [])
-            if isinstance(x, str)
-        }
-        try:
-            from app.services.archi_config import get_page_kind_filter_enabled
-            page_kind_filter_enabled = get_page_kind_filter_enabled()
-        except Exception:
-            page_kind_filter_enabled = getattr(self._settings, "page_kind_filter_enabled", False)
-        page_kind_weighting_enabled = bool(
-            getattr(self._settings, "retrieval_page_kind_weighting_enabled", True)
-        ) and bool(page_kind_filter_enabled)
-        preferred_page_kinds = [
-            str(x).strip().lower()
-            for x in (plan_hint.get("preferred_page_kinds") or [])
-            if str(x).strip()
-        ]
-        supporting_page_kinds = [
-            str(x).strip().lower()
-            for x in (plan_hint.get("supporting_page_kinds") or [])
-            if str(x).strip()
-        ]
-        page_kind_weights: dict[str, float] = {}
-        if isinstance(plan_hint.get("page_kind_weights"), dict):
-            for k, v in (plan_hint.get("page_kind_weights") or {}).items():
-                key = str(k).strip().lower()
-                if not key:
-                    continue
-                try:
-                    page_kind_weights[key] = float(v)
-                except (TypeError, ValueError):
-                    continue
-        product_family_hints = [
-            str(x).strip().lower()
-            for x in (plan_hint.get("product_family_hints") or [])
-            if str(x).strip()
-        ]
-        product_family_weights: dict[str, float] = {}
-        if isinstance(plan_hint.get("product_family_weights"), dict):
-            for k, v in (plan_hint.get("product_family_weights") or {}).items():
-                key = str(k).strip().lower()
-                if not key:
-                    continue
-                try:
-                    product_family_weights[key] = float(v)
-                except (TypeError, ValueError):
-                    continue
-        demote_doc_types = [
-            str(x).strip().lower()
-            for x in (plan_hint.get("demote_doc_types") or [])
-            if str(x).strip()
-        ]
-        if not page_kind_weighting_enabled:
-            preferred_page_kinds = []
-            supporting_page_kinds = []
-            page_kind_weights = {}
-            demote_doc_types = []
-        is_pricing_retrieval = bool(plan_hint.get("boost_pricing", False))
-        ensure_doc_types = [
-            str(x).strip()
-            for x in (plan_hint.get("ensure_doc_types") or [])
-            if str(x).strip()
-        ]
-        diversity_doc_types = [
-            str(x).strip()
-            for x in (plan_hint.get("diversity_doc_types") or [])
-            if str(x).strip()
-        ]
-        try:
-            diversity_fetch_per_type = max(
-                1,
-                int(
-                    plan_hint.get("diversity_fetch_per_type")
-                    or getattr(self._settings, "retrieval_diversity_fetch_per_type", 6)
-                ),
-            )
-        except Exception:
-            diversity_fetch_per_type = 6
+        # 3. Strategy & budget
+        strategy = self._resolve_doc_type_strategy(plan, doc_types, retry_strategy, top_n, top_k)
+        budget = self._parse_budget_hints(plan, self._settings)
 
+        # 4. Parallel BM25 + vector fetch
         bm25_bundle, vector_bundle = await self._fetch_parallel_candidates(
-            qr=qr,
-            fetch_n=fetch_n,
-            primary_doc_types=primary_doc_types,
-            authoritative_doc_types=authoritative_doc_types,
-            supporting_doc_types=supporting_doc_types,
-            ensure_doc_types=ensure_doc_types,
-            diversity_doc_types=diversity_doc_types,
-            diversity_fetch_per_type=diversity_fetch_per_type,
-            boost_pricing=is_pricing_retrieval or bool(retry_strategy and retry_strategy.boost_patterns),
-            preferred_page_kinds=(preferred_page_kinds + supporting_page_kinds) or None,
-            product_family_hints=product_family_hints or None,
-            page_kind_weights=page_kind_weights or None,
-            product_family_weights=product_family_weights or None,
+            qr=qr, fetch_n=strategy.fetch_n,
+            primary_doc_types=strategy.primary_doc_types,
+            authoritative_doc_types=strategy.authoritative_doc_types,
+            supporting_doc_types=strategy.supporting_doc_types,
+            ensure_doc_types=budget.ensure_doc_types,
+            diversity_doc_types=budget.diversity_doc_types,
+            diversity_fetch_per_type=budget.diversity_fetch_per_type,
+            boost_pricing=budget.is_pricing_retrieval or bool(retry_strategy and retry_strategy.boost_patterns),
+            preferred_page_kinds=(budget.preferred_page_kinds + budget.supporting_page_kinds) or None,
+            product_family_hints=budget.product_family_hints or None,
+            page_kind_weights=budget.page_kind_weights or None,
+            product_family_weights=budget.product_family_weights or None,
         )
-        bm25_chunks = bm25_bundle.primary
+
+        # 5. Calibrate & merge
+        bm25_chunks, supporting_bm25, diversity_bm25, vector_chunks, supporting_vector = self._calibrate_all_chunks(
+            bm25_bundle.primary, bm25_bundle.supporting, bm25_bundle.diversity,
+            vector_bundle.primary, vector_bundle.supporting, budget,
+        )
         extra_bm25 = bm25_bundle.extra
-        supporting_bm25 = bm25_bundle.supporting
-        diversity_bm25 = bm25_bundle.diversity
-        vector_chunks = vector_bundle.primary
-        supporting_vector = vector_bundle.supporting
-
-        bm25_chunks = self._apply_search_calibration(
-            bm25_chunks,
-            page_kind_weights=page_kind_weights or None,
-            product_family_weights=product_family_weights or None,
-            product_family_hints=product_family_hints or None,
-            demote_doc_types=demote_doc_types or None,
-        )
-        supporting_bm25 = self._apply_search_calibration(
-            supporting_bm25,
-            page_kind_weights=page_kind_weights or None,
-            product_family_weights=product_family_weights or None,
-            product_family_hints=product_family_hints or None,
-            demote_doc_types=demote_doc_types or None,
-        )
-        diversity_bm25 = self._apply_search_calibration(
-            diversity_bm25,
-            page_kind_weights=page_kind_weights or None,
-            product_family_weights=product_family_weights or None,
-            product_family_hints=product_family_hints or None,
-            demote_doc_types=demote_doc_types or None,
-        )
-        vector_chunks = self._apply_search_calibration(
-            vector_chunks,
-            page_kind_weights=page_kind_weights or None,
-            product_family_weights=product_family_weights or None,
-            product_family_hints=product_family_hints or None,
-            demote_doc_types=demote_doc_types or None,
-        )
-        supporting_vector = self._apply_search_calibration(
-            supporting_vector,
-            page_kind_weights=page_kind_weights or None,
-            product_family_weights=product_family_weights or None,
-            product_family_hints=product_family_hints or None,
-            demote_doc_types=demote_doc_types or None,
+        merged = self._merge_and_inject_extras(
+            bm25_chunks, supporting_bm25, vector_chunks, supporting_vector, extra_bm25, diversity_bm25,
         )
 
-        bm25_ids = {c.chunk_id for c in bm25_chunks}
-        vector_ids = {c.chunk_id for c in vector_chunks}
-        extra_ids = {c.chunk_id for c in extra_bm25}
-        diversity_ids = {c.chunk_id for c in diversity_bm25}
-        if supporting_doc_types and supporting_doc_types != authoritative_doc_types:
-            extra_ids.update(c.chunk_id for c in supporting_bm25 + supporting_vector)
-
-        if self._settings.retrieval_fusion == "rrf":
-            merged = self._merge_with_rrf(
-                self._dedupe_chunks(bm25_chunks + supporting_bm25),
-                self._dedupe_chunks(vector_chunks + supporting_vector),
-                k=self._settings.retrieval_rrf_k,
-            )
-        else:
-            merged = self._merge_simple(
-                self._dedupe_chunks(bm25_chunks + supporting_bm25),
-                self._dedupe_chunks(vector_chunks + supporting_vector),
-            )
-
-        if extra_bm25 or diversity_bm25:
-            seen_ids = {c.chunk_id for c in merged}
-            scores = [c.score for c in merged] if merged else [0.0]
-            median_score = sorted(scores)[len(scores) // 2] if scores else 0.01
-            for c in extra_bm25:
-                if c.chunk_id not in seen_ids:
-                    seen_ids.add(c.chunk_id)
-                    merged.append(
-                        SearchChunk(
-                            chunk_id=c.chunk_id,
-                            document_id=c.document_id,
-                            chunk_text=c.chunk_text,
-                            source_url=c.source_url,
-                            doc_type=c.doc_type,
-                            score=max(c.score, median_score * 0.9),
-                            metadata=c.metadata,
-                        )
-                    )
-            for c in diversity_bm25:
-                if c.chunk_id not in seen_ids:
-                    seen_ids.add(c.chunk_id)
-                    merged.append(
-                        SearchChunk(
-                            chunk_id=c.chunk_id,
-                            document_id=c.document_id,
-                            chunk_text=c.chunk_text,
-                            source_url=c.source_url,
-                            doc_type=c.doc_type,
-                            score=max(c.score, median_score * 0.85),
-                            metadata=c.metadata,
-                        )
-                    )
-
+        # 6. Stats
         stats: dict[str, Any] = {
-            "bm25_count": len(bm25_chunks),
-            "vector_count": len(vector_chunks),
-            "supporting_bm25_count": len(supporting_bm25),
-            "supporting_vector_count": len(supporting_vector),
-            "diversity_bm25_count": len(diversity_bm25),
-            "merged_count": len(merged),
-            "fusion": self._settings.retrieval_fusion,
-            "retrieval_profile": profile,
+            "bm25_count": len(bm25_chunks), "vector_count": len(vector_chunks),
+            "supporting_bm25_count": len(supporting_bm25), "supporting_vector_count": len(supporting_vector),
+            "diversity_bm25_count": len(diversity_bm25), "merged_count": len(merged),
+            "fusion": self._settings.retrieval_fusion, "retrieval_profile": strategy.profile,
             "active_hypothesis": plan.active_hypothesis_name,
             "evidence_families": list(plan.evidence_families or []),
             "query_rewrite": {"keyword_query": qr.keyword_query, "semantic_query": qr.semantic_query},
-            "attempt": attempt,
-            "plan_reason": plan.reason,
-            "plan_budget_hint": plan_hint,
-            "query_source": planning_debug.get("query_source"),
+            "attempt": attempt, "plan_reason": plan.reason,
+            "plan_budget_hint": budget.plan_hint, "query_source": planning_debug.get("query_source"),
         }
-        if hard_requirements:
-            stats["hard_requirements"] = sorted(hard_requirements)
-        if primary_doc_types:
-            stats["primary_doc_types"] = primary_doc_types
-        if authoritative_doc_types:
-            stats["authoritative_doc_types"] = authoritative_doc_types
-        if supporting_doc_types:
-            stats["supporting_doc_types"] = supporting_doc_types
-        if preferred_page_kinds:
-            stats["preferred_page_kinds"] = preferred_page_kinds
-        if supporting_page_kinds:
-            stats["supporting_page_kinds"] = supporting_page_kinds
-        if product_family_hints:
-            stats["product_family_hints"] = product_family_hints
-        if demote_doc_types:
-            stats["demote_doc_types"] = demote_doc_types
-        if preferred_sources:
-            stats["preferred_sources"] = preferred_sources
-        if effective_query_spec and getattr(effective_query_spec, "rewrite_candidates", None):
-            stats["rewrite_candidates"] = effective_query_spec.rewrite_candidates[:3]
+        if budget.hard_requirements:
+            stats["hard_requirements"] = sorted(budget.hard_requirements)
+        if strategy.primary_doc_types:
+            stats["primary_doc_types"] = strategy.primary_doc_types
+        if strategy.authoritative_doc_types:
+            stats["authoritative_doc_types"] = strategy.authoritative_doc_types
+        if strategy.supporting_doc_types:
+            stats["supporting_doc_types"] = strategy.supporting_doc_types
+        if budget.preferred_page_kinds:
+            stats["preferred_page_kinds"] = budget.preferred_page_kinds
+        if budget.supporting_page_kinds:
+            stats["supporting_page_kinds"] = budget.supporting_page_kinds
+        if budget.product_family_hints:
+            stats["product_family_hints"] = budget.product_family_hints
+        if budget.demote_doc_types:
+            stats["demote_doc_types"] = budget.demote_doc_types
+        if strategy.preferred_sources:
+            stats["preferred_sources"] = strategy.preferred_sources
+        if effective_query_spec and effective_query_spec.retrieval_hints.rewrite_candidates:
+            stats["rewrite_candidates"] = effective_query_spec.retrieval_hints.rewrite_candidates[:3]
         if retry_strategy:
             stats["retry_strategy"] = {
                 "boost_patterns": (retry_strategy.boost_patterns or [])[:5],
                 "filter_doc_types": retry_strategy.filter_doc_types,
                 "context_expansion": retry_strategy.context_expansion,
             }
-        if ensure_doc_types:
-            stats["intent_fetch_doc_types"] = ensure_doc_types
+        if budget.ensure_doc_types:
+            stats["intent_fetch_doc_types"] = budget.ensure_doc_types
             stats["intent_fetch_count"] = len(extra_bm25)
-        if diversity_doc_types:
-            stats["diversity_doc_types"] = diversity_doc_types
+        if budget.diversity_doc_types:
+            stats["diversity_doc_types"] = budget.diversity_doc_types
             doc_type_seen = {
                 (c.doc_type or "").strip().lower()
                 for c in (bm25_chunks + vector_chunks + supporting_bm25 + supporting_vector + diversity_bm25)
                 if (c.doc_type or "").strip()
             }
-            stats["diversity_doc_types_covered"] = [d for d in diversity_doc_types if d.lower() in doc_type_seen]
+            stats["diversity_doc_types_covered"] = [d for d in budget.diversity_doc_types if d.lower() in doc_type_seen]
 
+        # 7. Early return on empty
         if not merged:
             try:
                 from app.core.metrics import retrieval_requests_total, retrieval_miss_rate
@@ -1089,162 +1213,93 @@ class RetrievalService:
             except Exception:
                 pass
             return EvidencePack(
-                chunks=[],
-                retrieval_stats=stats,
-                retrieval_plan=plan,
-                candidate_pool=self._build_candidate_pool(
-                    [], set(), set(), set(), set(), stats, plan
-                ),
+                chunks=[], retrieval_stats=stats, retrieval_plan=plan,
+                candidate_pool=self._build_candidate_pool([], set(), set(), set(), set(), stats, plan),
                 evidence_set=None,
             )
 
-        rerank_k = min(rerank_k, len(merged))
+        # 8. Rerank
+        rerank_k = min(strategy.rerank_k, len(merged))
         rerank_started = time.perf_counter()
         try:
             reranked = await self._reranker.rerank(effective_query, merged, rerank_k)
         finally:
             stats.setdefault("timings", {})["rerank"] = time.perf_counter() - rerank_started
 
-        candidate_pool = self._build_candidate_pool(
-            merged, bm25_ids, vector_ids, extra_ids, diversity_ids, stats, plan
-        )
+        # 9. Candidate pool
+        bm25_ids = {c.chunk_id for c in bm25_chunks}
+        vector_ids = {c.chunk_id for c in vector_chunks}
+        extra_ids = {c.chunk_id for c in extra_bm25}
+        diversity_ids = {c.chunk_id for c in diversity_bm25}
+        if strategy.supporting_doc_types and strategy.supporting_doc_types != strategy.authoritative_doc_types:
+            extra_ids.update(c.chunk_id for c in supporting_bm25 + supporting_vector)
+        candidate_pool = self._build_candidate_pool(merged, bm25_ids, vector_ids, extra_ids, diversity_ids, stats, plan)
 
+        # 10. Post-rerank: calibration + penalty + exclude
         reranked_search: list[tuple[SearchChunk, float]] = list(reranked)
         reranked_search = self._apply_rerank_calibration(
-            reranked_search,
-            page_kind_weights=page_kind_weights or None,
-            product_family_weights=product_family_weights or None,
-            product_family_hints=product_family_hints or None,
-            demote_doc_types=demote_doc_types or None,
+            reranked_search, page_kind_weights=budget.page_kind_weights or None,
+            product_family_weights=budget.product_family_weights or None,
+            product_family_hints=budget.product_family_hints or None,
+            demote_doc_types=budget.demote_doc_types or None,
         )
-        # Deprioritize conversation chunks: prefer docs; use conversation when docs lack ideal chunks
-        penalty = getattr(self._settings, "retrieval_conversation_score_penalty", 1.0)
-        if penalty < 1.0:
-            reranked_search = [
-                (c, (s * penalty) if (c.doc_type or "").lower() == "conversation" else s)
-                for c, s in reranked_search
-            ]
-            reranked_search = sorted(reranked_search, key=lambda x: x[1], reverse=True)
-        if retry_strategy and retry_strategy.exclude_patterns:
-            exclude_re = re.compile(
-                "|".join(re.escape(p) for p in retry_strategy.exclude_patterns),
-                re.I,
-            )
-            before = len(reranked_search)
-            reranked_search = [
-                (c, s) for c, s in reranked_search
-                if not exclude_re.search((c.chunk_text or "")[:500])
-                and not exclude_re.search(c.source_url or "")
-            ]
-            if before > len(reranked_search):
-                stats["exclude_patterns_filtered"] = before - len(reranked_search)
+        reranked_search = self._apply_conversation_penalty(reranked_search)
+        reranked_search = self._apply_exclude_patterns(reranked_search, retry_strategy, stats)
 
-        # Evidence Selector: coverage-aware selection (Phase 1)
+        # 11. Evidence selector
         required_evidence = list(plan.active_required_evidence or [])
         if not required_evidence and effective_query_spec:
             required_evidence = list(
-                getattr(effective_query_spec, "hard_requirements", None)
-                or effective_query_spec.required_evidence
-                or []
+                effective_query_spec.retrieval_hints.hard_requirements
+                or effective_query_spec.retrieval_hints.required_evidence or []
             )
         coverage_map: dict[str, str] | None = None
         selector_candidates = list(reranked_search)
         if self._settings.evidence_selector_use_llm and reranked_search:
             from app.services.evidence_selector import select_evidence_for_query
             product_type = None
-            if effective_query_spec and getattr(effective_query_spec, "resolved_slots", None):
-                product_type = str((effective_query_spec.resolved_slots or {}).get("product_type", "")).strip() or None
+            if effective_query_spec and effective_query_spec.query_slots.resolved_slots:
+                product_type = str((effective_query_spec.query_slots.resolved_slots or {}).get("product_type", "")).strip() or None
             selection = await select_evidence_for_query(
-                effective_query,
-                reranked_search,
+                effective_query, reranked_search,
                 required_evidence=required_evidence if required_evidence else None,
-                product_type=product_type,
-                top_k_fallback=self._settings.evidence_selector_fallback_top_k,
+                product_type=product_type, top_k_fallback=self._settings.evidence_selector_fallback_top_k,
             )
             reranked_search = selection.selected
             if selection.used_llm:
                 coverage_map = selection.coverage_map
                 stats["evidence_selector"] = {
-                    "used_llm": True,
-                    "coverage_map": selection.coverage_map,
+                    "used_llm": True, "coverage_map": selection.coverage_map,
                     "uncovered_requirements": selection.uncovered_requirements[:5],
                     "reasoning": selection.reasoning[:100],
                 }
         reranked_search = self._retain_supporting_conversation_chunk(
-            reranked_search,
-            selector_candidates,
+            reranked_search, selector_candidates,
             max_items=max(rerank_k, self._settings.evidence_selector_fallback_top_k),
         )
 
+        # 12. Build evidence set
         evidence_set = build_evidence_set(
-            reranked_search, effective_query_spec, plan, candidate_pool,
-            coverage_map=coverage_map,
+            reranked_search, effective_query_spec, plan, candidate_pool, coverage_map=coverage_map,
         )
         evidence = list(evidence_set.chunks)
 
-        min_ensure = self._settings.retrieval_ensure_doc_type_min
-        # Policy/troubleshooting profiles: ensure stronger doc_type representation
-        if ensure_doc_types and set(ensure_doc_types) & {"policy", "tos"}:
-            min_ensure = max(min_ensure, 3)
-        elif ensure_doc_types and set(ensure_doc_types) & {"howto", "docs", "faq"}:
-            min_ensure = max(min_ensure, 2)
-        if min_ensure > 0 and ensure_doc_types:
-            ensure_set = set(ensure_doc_types)
-            count_ensure = sum(1 for e in evidence if e.doc_type in ensure_set)
-            if count_ensure < min_ensure:
-                need = min_ensure - count_ensure
-                evidence_ids = {e.chunk_id for e in evidence}
-                candidates = [
-                    c for c in merged
-                    if c.chunk_id not in evidence_ids and c.doc_type in ensure_set
-                ]
-                for c in candidates[:need]:
-                    evidence.append(
-                        EvidenceChunk(
-                            chunk_id=c.chunk_id,
-                            snippet=(c.chunk_text or "")[:500] + ("..." if len(c.chunk_text or "") > 500 else ""),
-                            source_url=c.source_url or "",
-                            doc_type=c.doc_type or "",
-                            score=c.score,
-                            full_text=c.chunk_text,
-                        )
-                    )
-                if len(evidence) > rerank_k:
-                    by_score = sorted(
-                        [e for e in evidence if e.doc_type not in ensure_set],
-                        key=lambda e: e.score or 0,
-                    )
-                    to_remove = min(len(evidence) - rerank_k, len(by_score))
-                    remove_ids = {by_score[i].chunk_id for i in range(to_remove)}
-                    evidence = [e for e in evidence if e.chunk_id not in remove_ids]
-                chunk_by_id = {c.chunk_id: c for c in merged}
-                reranked_rebuild = [
-                    (chunk_by_id[e.chunk_id], e.score or 0)
-                    for e in evidence
-                    if e.chunk_id in chunk_by_id
-                ]
-                evidence_set = build_evidence_set(
-                    reranked_rebuild, effective_query_spec, plan, candidate_pool,
-                    coverage_map=None,  # rebuild: use heuristic (chunks changed)
-                )
-                evidence = list(evidence_set.chunks)
+        # 13. Enforce minimum doc type representation
+        evidence_set, evidence = self._enforce_minimum_doc_types(
+            evidence_set, evidence, budget.ensure_doc_types, merged, rerank_k,
+            effective_query_spec, plan, candidate_pool,
+        )
 
+        # 14. Metrics & return
         stats["reranked_count"] = len(evidence)
         try:
-            from app.core.metrics import (
-                retrieval_requests_total,
-                retrieval_chunks_returned,
-                retrieval_hit_rate,
-            )
+            from app.core.metrics import retrieval_requests_total, retrieval_chunks_returned, retrieval_hit_rate
             retrieval_requests_total.inc()
             retrieval_chunks_returned.observe(len(evidence))
             retrieval_hit_rate.inc()
         except Exception:
             pass
         return EvidencePack(
-            chunks=evidence,
-            retrieval_stats=stats,
-            retrieval_plan=plan,
-            candidate_pool=candidate_pool,
-            evidence_set=evidence_set,
+            chunks=evidence, retrieval_stats=stats, retrieval_plan=plan,
+            candidate_pool=candidate_pool, evidence_set=evidence_set,
         )

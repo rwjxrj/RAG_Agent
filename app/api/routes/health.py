@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from fastapi.responses import Response
 from prometheus_client import REGISTRY, generate_latest
 
-from app.api.schemas import HealthResponse
+from app.api.schemas import HealthCheckResponse, HealthResponse
 
 router = APIRouter(tags=["health"])
 
@@ -38,6 +38,14 @@ async def health():
         version="1.0.0",
         checks=checks,
     )
+
+
+@router.post("/health/check", response_model=HealthCheckResponse)
+async def health_check():
+    """Comprehensive health check: LLM, Embedding, Reranker, DB, Redis, Qdrant, OpenSearch."""
+    from app.services.health_check import run_health_check
+    result = await run_health_check()
+    return HealthCheckResponse(**result)
 
 
 @router.get("/metrics")

@@ -13,7 +13,7 @@ the next action.
 from dataclasses import dataclass, field
 from enum import Enum
 import time
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -25,9 +25,13 @@ from app.services.schemas import (
     DecisionResult,
     EvidenceAssessment,
     EvidenceSet,
+    GeneratePhaseOutput,
+    OrchestratorDebug,
     QuerySpec,
+    RetrievePhaseOutput,
     RetrievalPlan,
     ReviewResult,
+    VerifyPhaseOutput,
 )
 
 logger = get_logger(__name__)
@@ -36,6 +40,10 @@ logger = get_logger(__name__)
 class OrchestratorAction(str, Enum):
     """Next action in workflow."""
 
+    INTENT_CACHE = "intent_cache"
+    AGENTIC_ROUTE = "agentic_route"
+    NORMALIZE = "normalize"
+    SKIP_RETRIEVAL = "skip_retrieval"
     UNDERSTAND = "understand"
     RETRIEVE = "retrieve"
     ASSESS_EVIDENCE = "assess_evidence"
@@ -52,6 +60,10 @@ class OrchestratorState(str, Enum):
     """Workflow state."""
 
     INIT = "init"
+    INTENT_CACHE = "intent_cache"
+    AGENTIC_ROUTE = "agentic_route"
+    NORMALIZE = "normalize"
+    SKIP_RETRIEVAL = "skip_retrieval"
     UNDERSTANDING = "understanding"
     RETRIEVING = "retrieving"
     ASSESSING = "assessing"
@@ -85,6 +97,8 @@ class PhaseResult:
     reviewer_result: Any = None
     retry_query_override: str | None = None
     hypothesis_judge: dict[str, Any] | None = None
+    early_output: Any = None
+    agentic_debug: dict[str, Any] | None = None
 
 
 @dataclass
@@ -124,7 +138,15 @@ class OrchestratorContext:
     generated_decision: str | None = None
     retry_query_override: str | None = None
     hypothesis_judge: dict[str, Any] | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
+    retrieve_output: RetrievePhaseOutput = field(default_factory=RetrievePhaseOutput)
+    generate_output: GeneratePhaseOutput = field(default_factory=GeneratePhaseOutput)
+    verify_output: VerifyPhaseOutput = field(default_factory=VerifyPhaseOutput)
+    orchestrator_debug: OrchestratorDebug = field(default_factory=OrchestratorDebug)
+    last_reviewer_result: Any = None  # Replaces runtime-injected _last_reviewer_result
+    trace_collector: Any = None
+    early_output: Any = None
+    skip_retrieval: bool = False
+    agentic_debug: dict[str, Any] = field(default_factory=dict)
 
     def can_retry(self) -> bool:
         """Whether another retrieval attempt is still allowed."""
@@ -143,19 +165,6 @@ class OrchestratorContext:
         self.stage_reasons.append(f"{stage}: {reason}")
 
 
-@runtime_checkable
-class OrchestratorHandlers(Protocol):
-    """Protocol for phase execution. Implemented by AnswerService or test doubles."""
-
-    async def execute(self, ctx: OrchestratorContext, action: OrchestratorAction) -> PhaseResult:
-        """Execute the given action and return phase result."""
-        ...
-
-    async def build_output(self, ctx: OrchestratorContext, action: OrchestratorAction) -> Any:
-        """Build final output for terminal actions (DONE, ASK_USER, ESCALATE)."""
-        ...
-
-
 def _reviewer_status_to_str(reviewer_result: Any) -> str | None:
     """Map ReviewerResult.status to string for next_action."""
     if reviewer_result is None:
@@ -168,6 +177,7 @@ def _reviewer_status_to_str(reviewer_result: Any) -> str | None:
 
 _VERIFY_REPAIR_RETRY_REASONS = {"type_mismatch", "overclaim", "unsupported_exact"}
 _TIMED_ACTIONS = {
+    OrchestratorAction.NORMALIZE: "query_extract",
     OrchestratorAction.RETRIEVE: "retrieve",
     OrchestratorAction.ASSESS_EVIDENCE: "assess_evidence",
     OrchestratorAction.GENERATE: "generate",
@@ -176,7 +186,7 @@ _TIMED_ACTIONS = {
 
 
 def _record_phase_timing(ctx: OrchestratorContext, key: str, elapsed_seconds: float) -> None:
-    timings = ctx.extra.setdefault("phase_timings", {})
+    timings = ctx.orchestrator_debug.phase_timings
     try:
         current = float(timings.get(key, 0.0) or 0.0)
     except (TypeError, ValueError):
@@ -200,15 +210,50 @@ def _extract_rerank_timing(result: PhaseResult) -> float:
         return 0.0
 
 
-class Orchestrator:
+class PipelineRunner:
     """State machine orchestrator for support flow. Drives pipeline per strategy."""
 
     def __init__(
         self,
         primary_model: str | None = None,
         fallback_model: str | None = None,
+        retrieval: Any = None,
+        llm: Any = None,
+        reviewer: Any = None,
+        agentic_router: Any = None,
+        intent_matcher: Any = None,
+        normalizer: Any = None,
+        language_detector: Any = None,
     ):
+        if retrieval is None:
+            from app.services.retrieval import RetrievalService
+            retrieval = RetrievalService()
+        if llm is None:
+            from app.services.llm_gateway import get_llm_gateway
+            llm = get_llm_gateway()
+        if reviewer is None:
+            from app.services.reviewer import ReviewerGate
+            reviewer = ReviewerGate()
+        if agentic_router is None:
+            from app.services.agentic_router import AgenticRouter
+            agentic_router = AgenticRouter()
+        if intent_matcher is None:
+            from app.services.branding_config import match_intent
+            intent_matcher = match_intent
+        if normalizer is None:
+            from app.services.normalizer import normalize
+            normalizer = normalize
+        if language_detector is None:
+            from app.services.language_detect import detect_language
+            language_detector = detect_language
         self._settings = get_settings()
+        self._retrieval = retrieval
+        self._llm = llm
+        self._reviewer = reviewer
+        self._agentic_router = agentic_router
+        self._intent_matcher = intent_matcher
+        self._normalizer = normalizer
+        self._language_detector = language_detector
         self.primary_model = primary_model or get_llm_model()
         self.fallback_model = fallback_model or get_llm_fallback_model()
         self.models = [self.primary_model, self.fallback_model]
@@ -234,7 +279,7 @@ class Orchestrator:
             return False
         if not ctx.can_retry():
             return False
-        if bool(ctx.extra.get("verify_targeted_retry_used")):
+        if ctx.verify_output.targeted_retry_used:
             return False
 
         retry_reason = str(getattr(reviewer_result, "retry_reason", "") or "").strip().lower()
@@ -249,10 +294,10 @@ class Orchestrator:
             return False
 
         ctx.retry_query_override = suggested_queries[0]
-        ctx.extra["verify_targeted_retry_pending"] = True
-        ctx.extra["verify_targeted_retry_used"] = True
-        ctx.extra["verify_targeted_retry_reason"] = retry_reason
-        ctx.extra["verify_targeted_retry_queries"] = suggested_queries[:3]
+        ctx.verify_output.targeted_retry_pending = True
+        ctx.verify_output.targeted_retry_used = True
+        ctx.verify_output.targeted_retry_reason = retry_reason
+        ctx.verify_output.targeted_retry_queries = suggested_queries[:3]
         return True
 
     def next_action(
@@ -263,7 +308,23 @@ class Orchestrator:
     ) -> OrchestratorAction:
         """Determine next action from current state and reviewer result."""
         if ctx.state == OrchestratorState.INIT:
-            return OrchestratorAction.UNDERSTAND
+            return OrchestratorAction.INTENT_CACHE
+
+        if ctx.state == OrchestratorState.INTENT_CACHE:
+            return OrchestratorAction.DONE if ctx.early_output else OrchestratorAction.AGENTIC_ROUTE
+
+        if ctx.state == OrchestratorState.AGENTIC_ROUTE:
+            return OrchestratorAction.DONE if ctx.early_output else OrchestratorAction.NORMALIZE
+
+        if ctx.state == OrchestratorState.NORMALIZE:
+            return (
+                OrchestratorAction.SKIP_RETRIEVAL
+                if ctx.skip_retrieval
+                else OrchestratorAction.RETRIEVE
+            )
+
+        if ctx.state == OrchestratorState.SKIP_RETRIEVAL:
+            return OrchestratorAction.DONE
 
         if ctx.state == OrchestratorState.UNDERSTANDING:
             return OrchestratorAction.RETRIEVE
@@ -273,7 +334,7 @@ class Orchestrator:
                 return OrchestratorAction.ASSESS_EVIDENCE
             if (
                 ctx.query_spec
-                and getattr(ctx.query_spec, "answerable_without_clarification", True) is False
+                and ctx.query_spec.clarification_needs.answerable_without_clarification is False
             ):
                 return OrchestratorAction.DECIDE
             if ctx.can_retry():
@@ -319,7 +380,7 @@ class Orchestrator:
             if reviewer_status == "ESCALATE":
                 return OrchestratorAction.ESCALATE
             if reviewer_status == "ASK_USER":
-                if bool(ctx.extra.get("verify_targeted_retry_pending")):
+                if ctx.verify_output.targeted_retry_pending:
                     return OrchestratorAction.RETRY_RETRIEVE
                 return OrchestratorAction.ASK_USER
             return OrchestratorAction.ASK_USER
@@ -336,7 +397,37 @@ class Orchestrator:
         result: PhaseResult,
     ) -> None:
         """Update context after executing an action. Handles state transitions."""
-        if action == OrchestratorAction.UNDERSTAND:
+        if action == OrchestratorAction.INTENT_CACHE:
+            ctx.early_output = result.early_output
+            ctx.state = OrchestratorState.INTENT_CACHE
+            ctx.add_stage_reason("intent_cache", "hit" if result.early_output else "miss")
+
+        elif action == OrchestratorAction.AGENTIC_ROUTE:
+            ctx.early_output = result.early_output
+            ctx.agentic_debug = result.agentic_debug or {}
+            ctx.state = OrchestratorState.AGENTIC_ROUTE
+            ctx.add_stage_reason(
+                "agentic_route",
+                str(ctx.agentic_debug.get("route") or ctx.agentic_debug.get("reason") or "rag_search"),
+            )
+
+        elif action == OrchestratorAction.NORMALIZE:
+            ctx.query_spec = result.query_spec
+            ctx.effective_query = result.effective_query or ctx.query
+            ctx.source_lang = result.source_lang or "en"
+            ctx.skip_retrieval = result.skip_retrieval
+            ctx.state = OrchestratorState.NORMALIZE
+            ctx.add_stage_reason(
+                "normalize",
+                "skip_retrieval" if result.skip_retrieval else "query_spec_ready",
+            )
+
+        elif action == OrchestratorAction.SKIP_RETRIEVAL:
+            ctx.early_output = result.early_output
+            ctx.state = OrchestratorState.SKIP_RETRIEVAL
+            ctx.add_stage_reason("skip_retrieval", "canned_response")
+
+        elif action == OrchestratorAction.UNDERSTAND:
             if result.query_spec:
                 ctx.query_spec = result.query_spec
             ctx.effective_query = result.effective_query or ctx.query
@@ -414,7 +505,7 @@ class Orchestrator:
                 if scheduled:
                     ctx.add_stage_reason(
                         "verify_repair",
-                        f"targeted_retry:{ctx.extra.get('verify_targeted_retry_reason', 'unknown')}",
+                        f"targeted_retry:{ctx.verify_output.targeted_retry_reason}",
                     )
             ctx.review_result = ReviewResult(
                 status=schema_status,
@@ -430,17 +521,221 @@ class Orchestrator:
             ctx.add_stage_reason("verify", _reviewer_status_to_str(rr) or "unknown")
 
         elif action == OrchestratorAction.RETRY_RETRIEVE:
-            ctx.extra["verify_targeted_retry_pending"] = False
+            ctx.verify_output.targeted_retry_pending = False
             ctx.retrieval_attempt += 1
             ctx.state = OrchestratorState.RETRYING
             ctx.add_stage_reason("retry_retrieve", f"attempt={ctx.retrieval_attempt}")
 
-    async def run(
+    async def _phase_intent_cache(self, ctx: OrchestratorContext) -> PhaseResult:
+        from app.services.schemas import AnswerOutput
+
+        trace = ctx.trace_collector
+        if trace:
+            trace.start_node("intent_cache")
+        intent = self._intent_matcher(ctx.query)
+        if not intent:
+            if trace:
+                trace.set_intent(False)
+                trace.skip_node("intent_cache", reason="miss")
+            return PhaseResult()
+        if trace:
+            trace.set_intent(True, intent.intent)
+            trace.complete_node("intent_cache")
+            trace.skip_node("agentic_router", reason="intent_cache_hit")
+        return PhaseResult(early_output=AnswerOutput(
+            decision="PASS",
+            answer=intent.answer,
+            followup_questions=[],
+            citations=[],
+            confidence=1.0,
+            debug={
+                "trace_id": ctx.trace_id,
+                "intent_cache": intent.intent,
+                "agentic_router": {"skipped": True, "reason": "intent_cache_hit"},
+            },
+        ))
+
+    async def _phase_agentic_route(self, ctx: OrchestratorContext) -> PhaseResult:
+        from app.services.agentic_router import AgenticRoute, AgenticRouter, AgenticRouterInput
+        from app.services.schemas import AnswerOutput
+
+        trace = ctx.trace_collector
+        if trace:
+            trace.start_node("agentic_router")
+        try:
+            decision = self._agentic_router.route(AgenticRouterInput(
+                query=ctx.query,
+                conversation_history=ctx.conversation_history,
+                source="reply",
+                trace_id=ctx.trace_id,
+            ))
+        except Exception:
+            decision = AgenticRouter.safe_fallback("router_exception")
+        debug = decision.to_debug()
+        trace_result = {
+            "route": decision.route,
+            "tool": decision.tool,
+            "confidence": decision.confidence,
+            "fallback_to_rag": decision.fallback_to_rag,
+        }
+        if trace:
+            if decision.fallback_to_rag:
+                trace.fallback_node(
+                    "agentic_router",
+                    reason=decision.reason,
+                    selected_tool=decision.tool,
+                    decision_reason=decision.reason,
+                    tool_result=trace_result,
+                )
+            else:
+                trace.complete_node(
+                    "agentic_router",
+                    selected_tool=decision.tool,
+                    decision_reason=decision.reason,
+                    tool_result=trace_result,
+                )
+        output = None
+        if decision.route == AgenticRoute.DIRECT_RESPONSE:
+            app_name = (self._settings.app_name or "").strip()
+            answer = f"你好，欢迎使用 {app_name} 客服。有什么可以帮你？" if app_name else "你好，有什么可以帮你？"
+            if trace:
+                trace.complete_node("direct_response", tool_result={"decision": "PASS"})
+            output = AnswerOutput(decision="PASS", answer=answer, followup_questions=[], citations=[], confidence=decision.confidence, debug={"trace_id": ctx.trace_id, "agentic_router": debug})
+        elif decision.route == AgenticRoute.CLARIFY:
+            followups = decision.clarifying_questions[:3] or ["请补充更多关键信息。"]
+            if trace:
+                trace.complete_node("clarify", tool_result={"decision": "ASK_USER", "followup_count": len(followups)})
+            output = AnswerOutput(decision="ASK_USER", answer="我还需要一点信息才能准确处理这个问题。", followup_questions=followups, citations=[], confidence=decision.confidence, debug={"trace_id": ctx.trace_id, "agentic_router": debug})
+        elif decision.route == AgenticRoute.HUMAN_HANDOFF:
+            if trace:
+                trace.complete_node("human_handoff", tool_result={"decision": "ESCALATE"})
+            output = AnswerOutput(decision="ESCALATE", answer="这个请求需要人工客服处理，我会将问题转交给人工跟进。", followup_questions=[], citations=[], confidence=decision.confidence, debug={"trace_id": ctx.trace_id, "agentic_router": debug})
+        return PhaseResult(early_output=output, agentic_debug=debug)
+
+    async def _phase_normalize(self, ctx: OrchestratorContext) -> PhaseResult:
+        from app.services.archi_config import get_language_detect_enabled
+
+        trace = ctx.trace_collector
+        if trace:
+            trace.start_node("query_extract")
+        source_lang = self._language_detector(ctx.query) if get_language_detect_enabled() else "en"
+        query_spec = None
+        if getattr(self._settings, "normalizer_enabled", True):
+            query_spec = await self._normalizer(
+                ctx.query,
+                ctx.conversation_history,
+                source_lang=source_lang,
+            )
+        if trace:
+            trace.complete_node("query_extract")
+        effective_query = (
+            query_spec.query_slots.canonical_query_en
+            if query_spec and query_spec.query_slots.canonical_query_en
+            else ctx.query
+        )
+        if query_spec:
+            hints = query_spec.retrieval_hints
+            ctx.retrieve_output.active_required_evidence = list(hints.required_evidence or [])
+            ctx.retrieve_output.active_hard_requirements = list(hints.hard_requirements or [])
+            ctx.retrieve_output.active_hypothesis_name = getattr(
+                hints.primary_hypothesis,
+                "name",
+                "primary",
+            )
+            ctx.max_attempts = max(
+                self._settings.max_retrieval_attempts,
+                1 + len(hints.fallback_hypotheses or []),
+            )
+        return PhaseResult(
+            query_spec=query_spec,
+            effective_query=effective_query,
+            source_lang=source_lang,
+            skip_retrieval=bool(query_spec and query_spec.skip_retrieval),
+        )
+
+    async def _phase_skip_retrieval(self, ctx: OrchestratorContext) -> PhaseResult:
+        from app.services.schemas import AnswerOutput
+
+        canned = (getattr(ctx.query_spec, "canned_response", None) or "").strip()
+        if not canned:
+            app_name = (self._settings.app_name or "").strip()
+            canned = f"你好，欢迎使用 {app_name} 客服。有什么可以帮你？" if app_name else "你好，有什么可以帮你？"
+        if ctx.trace_collector:
+            ctx.trace_collector.complete_node("direct_response", tool_result={"decision": "PASS"})
+        return PhaseResult(early_output=AnswerOutput(
+            decision="PASS",
+            answer=canned,
+            followup_questions=[],
+            citations=[],
+            confidence=1.0,
+            debug={"trace_id": ctx.trace_id, "skip_retrieval": True},
+        ))
+
+    async def execute(
         self,
         ctx: OrchestratorContext,
-        handlers: OrchestratorHandlers,
+        action: OrchestratorAction,
+    ) -> PhaseResult:
+        """Execute a phase with dependencies owned by the orchestrator."""
+        from app.services.phases import (
+            execute_assess_evidence,
+            execute_decide,
+            execute_generate,
+            execute_retrieve,
+            execute_verify,
+        )
+
+        if action == OrchestratorAction.INTENT_CACHE:
+            return await self._phase_intent_cache(ctx)
+        if action == OrchestratorAction.AGENTIC_ROUTE:
+            return await self._phase_agentic_route(ctx)
+        if action == OrchestratorAction.NORMALIZE:
+            return await self._phase_normalize(ctx)
+        if action == OrchestratorAction.SKIP_RETRIEVAL:
+            return await self._phase_skip_retrieval(ctx)
+        if action == OrchestratorAction.UNDERSTAND:
+            return PhaseResult(
+                query_spec=ctx.query_spec,
+                effective_query=ctx.effective_query or ctx.query,
+                source_lang=ctx.source_lang,
+            )
+        if action == OrchestratorAction.RETRIEVE:
+            return await execute_retrieve(
+                ctx,
+                retrieval=self._retrieval,
+                orchestrator=self,
+                settings=self._settings,
+            )
+        if action == OrchestratorAction.ASSESS_EVIDENCE:
+            return await execute_assess_evidence(ctx)
+        if action == OrchestratorAction.DECIDE:
+            return await execute_decide(ctx)
+        if action == OrchestratorAction.GENERATE:
+            return await execute_generate(
+                ctx,
+                llm=self._llm,
+                orchestrator=self,
+                settings=self._settings,
+            )
+        if action == OrchestratorAction.VERIFY:
+            return await execute_verify(ctx, reviewer=self._reviewer)
+        return PhaseResult()
+
+    async def build_output(
+        self,
+        ctx: OrchestratorContext,
+        action: OrchestratorAction,
     ) -> Any:
-        """Drive the pipeline until a terminal action. Returns handlers.build_output()."""
+        """Build the terminal answer using this orchestrator's model routing."""
+        from app.services.output_builder import build_output
+
+        return await build_output(ctx, action, orchestrator=self)
+
+    async def _run_context(
+        self,
+        ctx: OrchestratorContext,
+    ) -> Any:
+        """Drive the full pipeline until a terminal action."""
         terminal_actions = {
             OrchestratorAction.DONE,
             OrchestratorAction.ASK_USER,
@@ -453,7 +748,7 @@ class Orchestrator:
             iterations += 1
             has_evidence = bool(ctx.evidence)
             reviewer_status = _reviewer_status_to_str(
-                getattr(ctx, "_last_reviewer_result", None)
+                ctx.last_reviewer_result
             )
 
             action = self.next_action(ctx, reviewer_status, has_evidence)
@@ -472,7 +767,9 @@ class Orchestrator:
                     trace_id=ctx.trace_id,
                     stage_reasons=ctx.stage_reasons[-5:],
                 )
-                return await handlers.build_output(ctx, action)
+                if ctx.early_output is not None:
+                    return ctx.early_output
+                return await self.build_output(ctx, action)
 
             if action == OrchestratorAction.RETRY_RETRIEVE:
                 self._apply_result(ctx, action, PhaseResult())
@@ -485,7 +782,7 @@ class Orchestrator:
                         _pipeline_log("orchestrator", "execute", action=action.value, state=ctx.state.value, trace_id=ctx.trace_id)
                     except Exception:
                         pass
-                    result = await handlers.execute(ctx, action)
+                    result = await self.execute(ctx, action)
                 except Exception as e:
                     if timing_key:
                         _record_phase_timing(
@@ -494,8 +791,8 @@ class Orchestrator:
                             time.perf_counter() - phase_started,
                         )
                     logger.error("orchestrator_execute_failed", action=action.value, error=str(e))
-                    ctx.extra["error"] = str(e)
-                    return await handlers.build_output(ctx, OrchestratorAction.ESCALATE)
+                    ctx.orchestrator_debug.error = str(e)
+                    return await self.build_output(ctx, OrchestratorAction.ESCALATE)
                 if timing_key:
                     _record_phase_timing(
                         ctx,
@@ -506,9 +803,68 @@ class Orchestrator:
                     _record_phase_timing(ctx, "rerank", _extract_rerank_timing(result))
                 self._apply_result(ctx, action, result)
                 if action == OrchestratorAction.VERIFY and result.reviewer_result:
-                    ctx._last_reviewer_result = result.reviewer_result
+                    ctx.last_reviewer_result = result.reviewer_result
 
         ctx.termination_reason = "max_iterations"
         ctx.state = OrchestratorState.COMPLETE
         logger.warning("orchestrator_max_iterations", trace_id=ctx.trace_id)
-        return await handlers.build_output(ctx, OrchestratorAction.ASK_USER)
+        return await self.build_output(ctx, OrchestratorAction.ASK_USER)
+
+    async def run(
+        self,
+        query: str | OrchestratorContext,
+        conversation_history: list[dict[str, str]] | None = None,
+        trace_id: str | None = None,
+        source_lang: str = "en",
+    ) -> Any:
+        """Run the public pipeline entry point while preserving context-level tests."""
+        if isinstance(query, OrchestratorContext):
+            return await self._run_context(query)
+
+        from app.core.tracing import llm_call_log_var, llm_usage_var
+        from app.services.archi_config import get_debug_llm_calls
+        from app.services.output_builder import format_phase_timings
+        from app.services.trace_collector import TraceCollector
+
+        total_started = time.perf_counter()
+        trace = TraceCollector(trace_id=trace_id, source="reply")
+        llm_usage_var.set([])
+        if get_debug_llm_calls():
+            llm_call_log_var.set([])
+        ctx = OrchestratorContext(
+            query=query,
+            trace_id=trace_id,
+            conversation_history=conversation_history or [],
+            source_lang=source_lang,
+            trace_collector=trace,
+        )
+        output = await self._run_context(ctx)
+        if not ctx.early_output and not ctx.skip_retrieval:
+            trace.complete_node("retrieve")
+            trace.complete_node("assess_evidence")
+            if ctx.retrieval_attempt > 1:
+                trace.complete_node("retry")
+            trace.complete_node("generate")
+            trace.complete_node("verify")
+        timings = dict(ctx.orchestrator_debug.phase_timings)
+        timings["total"] = time.perf_counter() - total_started
+        normalized_timings = format_phase_timings(timings)
+        output.debug = output.debug or {}
+        output.debug["timings"] = normalized_timings
+        output.debug.update(normalized_timings)
+        output.debug["retry_count"] = max(0, int(ctx.retrieval_attempt or 0))
+        if ctx.agentic_debug:
+            output.debug["agentic_router"] = ctx.agentic_debug
+        trace.set_tool_result(
+            decision=output.decision,
+            citations_count=len(output.citations or []),
+            followup_count=len(output.followup_questions or []),
+            confidence=output.confidence,
+        )
+        trace.set_latency(normalized_timings)
+        output.debug["trace"] = trace.to_debug()
+        return output
+
+
+# Transitional import compatibility. PipelineRunner is the sole implementation.
+Orchestrator = PipelineRunner

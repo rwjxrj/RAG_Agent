@@ -22,6 +22,8 @@ from app.api.schemas import (
     DocTypeUpdateRequest,
     EmbeddingConfigResponse,
     EmbeddingConfigUpdateRequest,
+    RerankerConfigResponse,
+    RerankerConfigUpdateRequest,
     SystemPromptResponse,
     SystemPromptUpdateRequest,
     LLMConfigResponse,
@@ -53,6 +55,7 @@ from app.services.branding_config import refresh_cache
 from app.services.doc_type_service import refresh_doc_type_cache
 from app.services.embedding_config import refresh_cache as refresh_embedding_config
 from app.services.llm_config import refresh_cache as refresh_llm_config
+from app.services.reranker_config import refresh_cache as refresh_reranker_config
 from app.services.llm_gateway import clear_llm_cache
 from app.services.query_rewriter import clear_cache as clear_query_rewriter_cache
 
@@ -552,6 +555,82 @@ async def update_embedding_config(
     )
 
 
+@router.get("/config/reranker", response_model=RerankerConfigResponse)
+async def get_reranker_config(_auth: str = Depends(verify_admin_api_key)):
+    """Get current reranker config from cache/DB."""
+    from app.services.reranker_config import (
+        get_reranker_api_format,
+        get_reranker_api_key,
+        get_reranker_base_url,
+        get_reranker_model,
+        get_reranker_provider,
+        get_reranker_url,
+    )
+
+    return RerankerConfigResponse(
+        reranker_provider=get_reranker_provider(),
+        reranker_model=get_reranker_model(),
+        reranker_url=get_reranker_url(),
+        reranker_api_format=get_reranker_api_format(),
+        reranker_base_url=get_reranker_base_url(),
+        reranker_api_key=get_reranker_api_key(),
+    )
+
+
+@router.put("/config/reranker", response_model=RerankerConfigResponse)
+async def update_reranker_config(
+    body: RerankerConfigUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(verify_admin_api_key),
+):
+    """Update reranker config. Only provided fields are updated."""
+    from app.db.models import generate_uuid
+    from app.services.reranker_config import refresh_cache as refresh_reranker_config
+
+    keys_to_update: list[tuple[str, str]] = []
+    if body.reranker_provider is not None:
+        keys_to_update.append(("reranker_provider", body.reranker_provider))
+    if body.reranker_model is not None:
+        keys_to_update.append(("reranker_model", body.reranker_model))
+    if body.reranker_url is not None:
+        keys_to_update.append(("reranker_url", body.reranker_url))
+    if body.reranker_api_format is not None:
+        keys_to_update.append(("reranker_api_format", body.reranker_api_format))
+    if body.reranker_base_url is not None:
+        keys_to_update.append(("reranker_base_url", body.reranker_base_url))
+    if body.reranker_api_key is not None:
+        keys_to_update.append(("reranker_api_key", body.reranker_api_key))
+
+    for key, value in keys_to_update:
+        result = await db.execute(select(AppConfig).where(AppConfig.key == key).limit(1))
+        row = result.scalars().one_or_none()
+        if row:
+            row.value = value
+        else:
+            row = AppConfig(id=generate_uuid(), key=key, value=value)
+            db.add(row)
+    await db.flush()
+    await refresh_reranker_config(db)
+
+    from app.services.reranker_config import (
+        get_reranker_api_format,
+        get_reranker_api_key,
+        get_reranker_base_url,
+        get_reranker_model,
+        get_reranker_provider,
+        get_reranker_url,
+    )
+
+    return RerankerConfigResponse(
+        reranker_provider=get_reranker_provider(),
+        reranker_model=get_reranker_model(),
+        reranker_url=get_reranker_url(),
+        reranker_api_format=get_reranker_api_format(),
+        reranker_base_url=get_reranker_base_url(),
+        reranker_api_key=get_reranker_api_key(),
+    )
+
+
 @router.get("/config/archi", response_model=ArchiConfigResponse)
 async def get_archi_config(_auth: str = Depends(verify_admin_api_key)):
     """Get archi v3 feature flags from cache/DB."""
@@ -667,6 +746,7 @@ async def refresh_config_cache(
     await refresh_doc_type_cache(db)
     await refresh_llm_config(db)
     await refresh_embedding_config(db)
+    await refresh_reranker_config(db)
     await refresh_archi_config(db)
     return {"status": "ok", "message": "Cache refreshed"}
 

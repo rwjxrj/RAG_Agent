@@ -9,9 +9,6 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
-    CrawlWebsiteRequest,
-    CrawlWebsiteResponse,
-    CrawledPage,
     DocumentCreateRequest,
     DocumentListResponse,
     DocumentResponse,
@@ -56,68 +53,6 @@ async def fetch_content_from_url(
         raise HTTPException(status_code=502, detail=f"Cannot fetch URL: {str(e)}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.post("/crawl-website", response_model=CrawlWebsiteResponse)
-async def crawl_website(
-    body: CrawlWebsiteRequest,
-    db: AsyncSession = Depends(get_db),
-    _auth: str = Depends(verify_api_key),
-):
-    """Crawl entire website from seed URL and optionally ingest into knowledge base."""
-    import asyncio
-    from app.services.web_crawler import crawl_website as do_crawl
-    from app.services.ingestion import IngestionService
-
-    try:
-        docs = await asyncio.to_thread(
-            do_crawl,
-            body.url,
-            max_pages=body.max_pages,
-            max_depth=body.max_depth,
-            exclude_prefixes=body.exclude_prefixes or [],
-            render_js=body.render_js,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Crawl failed: {str(e)}")
-
-    from app.services.doc_type_classifier import resolve_doc_type
-
-    for d in docs:
-        d["doc_type"] = await resolve_doc_type(
-            d["url"],
-            d.get("title", "Untitled"),
-            d.get("content", d.get("raw_text", "")),
-        )
-        d["source_file"] = doc_type_source_file(d["doc_type"])
-
-    pages: list[CrawledPage] = [
-        CrawledPage(url=d["url"], title=d["title"], doc_type=d["doc_type"])
-        for d in docs
-    ]
-
-    ingested = 0
-    if body.ingest and docs:
-        svc = IngestionService()
-        for doc in docs:
-            doc_id = await svc.ingest_document(doc, db)
-            if doc_id:
-                ingested += 1
-                sync_document_create(
-                    source_url=doc["source_url"],
-                    title=doc["title"],
-                    content=doc.get("content", doc.get("raw_text", "")),
-                    doc_type=doc.get("doc_type", "other"),
-                )
-
-    return CrawlWebsiteResponse(
-        status="ok",
-        pages_crawled=len(docs),
-        pages_ingested=ingested,
-        pages=pages,
-    )
 
 
 @router.post("/re-crawl-all", response_model=ReCrawlAllResponse)

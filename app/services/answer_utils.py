@@ -7,6 +7,11 @@ from typing import Any
 from app.core.logging import get_logger
 from app.search.base import EvidenceChunk
 from app.services.evidence_quality import QualityReport
+from app.services.normalization import (
+    normalize_answer_mode as _sanitize_answer_mode,
+    normalize_support_level as _sanitize_support_level,
+    to_str_list as _to_str_list,
+)
 from app.services.schemas import AnswerPlan, DecisionResult, QuerySpec
 
 logger = get_logger(__name__)
@@ -16,8 +21,6 @@ _UUID_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
     re.IGNORECASE,
 )
-_ALLOWED_ANSWER_MODES = {"PASS_EXACT", "PASS_PARTIAL", "ASK_USER"}
-_ALLOWED_SUPPORT_LEVELS = {"strong", "partial", "weak"}
 _PARTIAL_DEFAULT_DISCLAIMER = "That's the best we have from our docs."
 _PARTIAL_DISCLAIMER_MARKERS = (
     "closest related",
@@ -77,41 +80,6 @@ def _sanitize_raw_citations(answer: str) -> str:
     cleaned = re.sub(r" {2,}", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
-
-
-def _sanitize_answer_mode(value: Any, *, default: str = "PASS_EXACT") -> str:
-    raw = str(value or "").strip().upper()
-    aliases = {
-        "EXACT": "PASS_EXACT",
-        "PARTIAL": "PASS_PARTIAL",
-        "PASS_WEAK": "PASS_PARTIAL",
-        "PASS_STRONG": "PASS_EXACT",
-        "CLARIFY": "ASK_USER",
-    }
-    normalized = aliases.get(raw, raw)
-    if normalized in _ALLOWED_ANSWER_MODES:
-        return normalized
-    return default
-
-
-def _sanitize_support_level(value: Any, *, default: str = "strong") -> str:
-    raw = str(value or "").strip().lower()
-    if raw in _ALLOWED_SUPPORT_LEVELS:
-        return raw
-    return default
-
-
-def _to_str_list(value: Any, *, limit: int = 4) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    out: list[str] = []
-    for item in value:
-        text = str(item).strip()
-        if text and text not in out:
-            out.append(text)
-        if len(out) >= limit:
-            break
-    return out
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -350,7 +318,7 @@ def _resolve_target_answer_mode(
     if decision_router and decision_router.decision == "ASK_USER":
         return "ASK_USER"
     if query_spec:
-        raw_mode = str(getattr(query_spec, "answer_mode", "") or "").strip()
+        raw_mode = query_spec.answer_contract.answer_mode.strip()
         if raw_mode:
             explicit = _sanitize_answer_mode(raw_mode)
             if explicit in _ALLOWED_ANSWER_MODES:
@@ -367,18 +335,18 @@ def _should_allow_advice_block(
         return False
     if target_mode == "ASK_USER":
         return False
-    if str(getattr(query_spec, "risk_level", "")).strip().lower() == "high":
+    if query_spec.query_intent.risk_level.strip().lower() == "high":
         return False
 
-    answer_type = str(getattr(query_spec, "answer_type", "") or "").strip().lower()
+    answer_type = query_spec.answer_contract.answer_type.strip().lower()
     if answer_type in {"policy", "direct_link", "clarification", "account"}:
         return False
 
-    answer_shape = str(getattr(query_spec, "answer_shape", "") or "").strip().lower()
+    answer_shape = query_spec.answer_contract.answer_shape.strip().lower()
     if answer_shape in {"recommendation", "comparison"}:
         return True
 
-    return bool(getattr(query_spec, "assistant_should_lead", False))
+    return bool(query_spec.clarification_needs.assistant_should_lead)
 
 
 def build_answer_plan(
@@ -415,22 +383,22 @@ def build_answer_plan(
         lane = "CANDIDATE_VERIFY"
 
     target_answer_type = (
-        str(getattr(query_spec, "answer_type", "") or "").strip() or "general"
+        query_spec.answer_contract.answer_type.strip() or "general"
         if query_spec
         else "general"
     )
-    target_entity = getattr(query_spec, "target_entity", None) if query_spec else None
+    target_entity = query_spec.query_intent.target_entity if query_spec else None
     required_for_exact = list(
         dict.fromkeys(
-            query_spec.required_evidence
-            if query_spec and getattr(query_spec, "required_evidence", None)
+            query_spec.retrieval_hints.required_evidence
+            if query_spec and query_spec.retrieval_hints.required_evidence
             else []
         )
     )
     required_for_partial = list(
         dict.fromkeys(
-            (query_spec.hard_requirements or [])
-            if query_spec and getattr(query_spec, "hard_requirements", None)
+            (query_spec.retrieval_hints.hard_requirements or [])
+            if query_spec and query_spec.retrieval_hints.hard_requirements
             else []
         )
     )

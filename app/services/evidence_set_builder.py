@@ -50,15 +50,15 @@ def build_evidence_set(
     if query_spec:
         hard = {
             str(x)
-            for x in (getattr(query_spec, "hard_requirements", None) or (query_spec.required_evidence or []))
+            for x in (query_spec.retrieval_hints.hard_requirements or (query_spec.retrieval_hints.required_evidence or []))
             if isinstance(x, str)
         }
         soft = {
             str(x)
-            for x in (getattr(query_spec, "soft_requirements", None) or [])
+            for x in (query_spec.retrieval_hints.soft_requirements or [])
             if isinstance(x, str)
         }
-        resolved = query_spec.resolved_slots or {}
+        resolved = query_spec.query_slots.resolved_slots or {}
     else:
         resolved = {}
     slot_names = set(resolved.keys())

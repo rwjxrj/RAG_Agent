@@ -8,9 +8,24 @@ from app.services.archi_config import get_doc_type_classifier_enabled
 from app.services.doc_type_service import get_doc_types_for_prompt, get_valid_doc_type_keys
 from app.services.llm_gateway import get_llm_gateway
 from app.services.model_router import get_model_for_task
-from app.services.web_crawler import _doc_type_from_url
+from app.core.config import get_settings
 
 logger = get_logger(__name__)
+
+
+def _doc_type_from_url(url: str) -> str:
+    """Infer doc_type from URL path using config-driven keyword mapping."""
+    url_lower = url.lower()
+    mapping = get_settings().doc_type_url_keywords or {}
+    for doc_type, keywords in mapping.items():
+        dt = str(doc_type).strip().lower()
+        if not dt:
+            continue
+        for kw in (keywords or []):
+            token = str(kw).strip().lower()
+            if token and token in url_lower:
+                return dt
+    return "other"
 
 
 def _build_classifier_prompt() -> str:

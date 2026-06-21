@@ -592,7 +592,8 @@ async def test_normalize_out_of_scope_redirect(mock_get_gateway):
     spec = await normalize("do you have money?")
     assert spec.out_of_scope
     assert spec.skip_retrieval
-    assert "help" in spec.canned_response.lower()
+    response = spec.canned_response.lower()
+    assert "help" in response or "帮助" in response
     assert "I don't have money" not in (spec.canned_response or "")
 
 

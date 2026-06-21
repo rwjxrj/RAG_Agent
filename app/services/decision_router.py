@@ -4,11 +4,10 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.search.base import EvidenceChunk
 from app.services.evidence_quality import QualityReport
+from app.services.normalization import configured_exact_answer_types as _configured_exact_answer_types
 from app.services.schemas import DecisionResult, QuerySpec
 
 logger = get_logger(__name__)
-
-_DEFAULT_EXACT_ANSWER_TYPES = {"direct_link", "pricing", "policy"}
 
 
 def _extract_partial_links(evidence: list[EvidenceChunk], max_links: int = 3) -> list[str]:
@@ -29,8 +28,8 @@ def _extract_partial_links(evidence: list[EvidenceChunk], max_links: int = 3) ->
 def _build_ask_user_missing_constraints(query_spec: QuerySpec) -> str:
     """Human response when constraints are missing."""
     questions = (
-        query_spec.blocking_clarifying_questions
-        or query_spec.clarifying_questions
+        query_spec.clarification_needs.blocking_clarifying_questions
+        or query_spec.clarification_needs.clarifying_questions
         or []
     )
     if questions:
@@ -63,8 +62,8 @@ def _build_ask_user_evidence_gap(
 def _build_ask_user_ambiguous(query_spec: QuerySpec) -> str:
     """Human response when query is ambiguous."""
     questions = (
-        query_spec.blocking_clarifying_questions
-        or query_spec.clarifying_questions
+        query_spec.clarification_needs.blocking_clarifying_questions
+        or query_spec.clarification_needs.clarifying_questions
         or []
     )
     if questions:
@@ -77,10 +76,10 @@ def _get_refinement_questions(query_spec: QuerySpec | None) -> list[str]:
     if not query_spec:
         return []
     questions = (
-        query_spec.refinement_questions
+        query_spec.clarification_needs.refinement_questions
         or (
-            query_spec.clarifying_questions
-            if getattr(query_spec, "answerable_without_clarification", True)
+            query_spec.clarification_needs.clarifying_questions
+            if query_spec.clarification_needs.answerable_without_clarification
             else []
         )
         or []
@@ -91,9 +90,9 @@ def _get_refinement_questions(query_spec: QuerySpec | None) -> list[str]:
 def _requires_blocking_clarification(query_spec: QuerySpec | None) -> bool:
     if not query_spec:
         return False
-    if getattr(query_spec, "answerable_without_clarification", True) is False:
+    if query_spec.clarification_needs.answerable_without_clarification is False:
         return True
-    return bool(query_spec.is_ambiguous and not _get_refinement_questions(query_spec))
+    return bool(query_spec.query_intent.is_ambiguous and not _get_refinement_questions(query_spec))
 
 
 def _should_use_partial_lane(
@@ -103,11 +102,11 @@ def _should_use_partial_lane(
 ) -> bool:
     if not query_spec or not evidence:
         return False
-    if str(getattr(query_spec, "risk_level", "")).lower() == "high":
+    if query_spec.query_intent.risk_level.lower() == "high":
         return False
-    if getattr(query_spec, "answerable_without_clarification", True) is False:
+    if query_spec.clarification_needs.answerable_without_clarification is False:
         return False
-    answer_mode = str(getattr(query_spec, "answer_mode", "")).upper()
+    answer_mode = query_spec.answer_contract.answer_mode.upper()
     if answer_mode == "ASK_USER":
         return False
     if answer_mode == "PASS_PARTIAL":
@@ -116,11 +115,11 @@ def _should_use_partial_lane(
         # Mode-calibration first: with usable evidence in low-risk domains, prefer
         # bounded partial answers over immediate ASK_USER.
         return True
-    if getattr(query_spec, "assistant_should_lead", False):
+    if query_spec.clarification_needs.assistant_should_lead:
         return True
-    if getattr(query_spec, "answer_mode_hint", "") == "weak":
+    if query_spec.answer_contract.answer_mode_hint == "weak":
         return True
-    if getattr(query_spec, "missing_info_for_refinement", None):
+    if query_spec.clarification_needs.missing_info_for_refinement:
         return True
     return bool(_get_refinement_questions(query_spec))
 
@@ -128,24 +127,8 @@ def _should_use_partial_lane(
 def _get_answer_type(query_spec: QuerySpec | None) -> str:
     if not query_spec:
         return "general"
-    value = str(getattr(query_spec, "answer_type", "")).strip().lower()
+    value = query_spec.answer_contract.answer_type.strip().lower()
     return value or "general"
-
-
-def _configured_exact_answer_types() -> set[str]:
-    raw = getattr(get_settings(), "exact_answer_types", None)
-    if isinstance(raw, str):
-        configured = [item.strip() for item in raw.split(",") if item.strip()]
-    elif isinstance(raw, (list, tuple, set)):
-        configured = list(raw)
-    else:
-        configured = []
-    normalized = {
-        str(item).strip().lower()
-        for item in configured
-        if str(item).strip()
-    }
-    return normalized or set(_DEFAULT_EXACT_ANSWER_TYPES)
 
 
 def _is_exact_task(query_spec: QuerySpec | None) -> bool:
@@ -159,10 +142,10 @@ def _should_pass_exact_as_partial(
 ) -> bool:
     if not query_spec or not evidence:
         return False
-    answer_mode = str(getattr(query_spec, "answer_mode", "")).upper()
+    answer_mode = query_spec.answer_contract.answer_mode.upper()
     if answer_mode == "PASS_PARTIAL":
         return True
-    support_level = str(getattr(query_spec, "support_level", "")).strip().lower()
+    support_level = query_spec.answer_contract.support_level.strip().lower()
     if support_level == "partial":
         return True
     coverage = getattr(quality_report, "hard_requirement_coverage", None)
@@ -196,8 +179,8 @@ def route(
             decision="ASK_USER",
             reason="ambiguous_query",
             clarifying_questions=(
-                query_spec.blocking_clarifying_questions
-                or query_spec.clarifying_questions
+                query_spec.clarification_needs.blocking_clarifying_questions
+                or query_spec.clarification_needs.clarifying_questions
                 or []
             ),
             partial_links=[],
@@ -206,13 +189,13 @@ def route(
             lane="ASK_USER",
         )
 
-    if query_spec and query_spec.constraints and not query_spec.constraints.get("complete", True):
+    if query_spec and query_spec.query_intent.constraints and not query_spec.query_intent.constraints.get("complete", True):
         return DecisionResult(
             decision="ASK_USER",
             reason="missing_constraints",
             clarifying_questions=(
-                query_spec.blocking_clarifying_questions
-                or query_spec.clarifying_questions
+                query_spec.clarification_needs.blocking_clarifying_questions
+                or query_spec.clarification_needs.clarifying_questions
                 or []
             ),
             partial_links=[],
@@ -221,7 +204,7 @@ def route(
             lane="ASK_USER",
         )
 
-    if query_spec and query_spec.risk_level == "high" and not passes_quality_gate:
+    if query_spec and query_spec.query_intent.risk_level == "high" and not passes_quality_gate:
         return DecisionResult(
             decision="ESCALATE",
             reason="high_risk_insufficient",

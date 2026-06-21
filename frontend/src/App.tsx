@@ -17,7 +17,6 @@ import ConversationDetail from './pages/ConversationDetail'
 import DocumentList from './pages/DocumentList'
 import DocumentDetail from './pages/DocumentDetail'
 import Dashboard from './pages/Dashboard'
-import Crawler from './pages/Crawler'
 import TicketList from './pages/TicketList'
 import TicketDetail from './pages/TicketDetail'
 import IntentList from './pages/IntentList'
@@ -26,8 +25,9 @@ import Settings from './pages/Settings'
 import Login from './pages/Login'
 import ApiTokens from './pages/ApiTokens'
 import ApiReference from './pages/ApiReference'
+import HealthCheck from './pages/HealthCheck'
 import { useAuth, AUTH_REQUIRED } from './contexts/AuthContext'
-import { LogOut, Key, BookOpen } from 'lucide-react'
+import { LogOut, Key, BookOpen, Activity } from 'lucide-react'
 
 const NAV_ITEMS = [
   { to: '/', icon: MessageSquare, label: '会话管理', match: ['/conversations'] },
@@ -36,6 +36,7 @@ const NAV_ITEMS = [
   { to: '/intents', icon: MessageCircle, label: '意图缓存', match: ['/intents'] },
   { to: '/doc-types', icon: FileType, label: '文档类型', match: ['/doc-types'] },
   { to: '/settings', icon: SettingsIcon, label: '设置', match: ['/settings'] },
+  { to: '/health', icon: Activity, label: '健康检查', match: ['/health'] },
   { to: '/tokens', icon: Key, label: 'API Token', match: ['/tokens'] },
   { to: '/api-reference', icon: BookOpen, label: 'API 参考', match: ['/api-reference'] },
 ]
@@ -194,11 +195,11 @@ function App() {
             <Route path="/tickets/:id" element={<TicketDetail />} />
             <Route path="/documents" element={<DocumentList />} />
             <Route path="/documents/:id" element={<DocumentDetail />} />
-            <Route path="/crawler" element={<Crawler />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/intents" element={<IntentList />} />
             <Route path="/doc-types" element={<DocTypeList />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/health" element={<HealthCheck />} />
             <Route path="/tokens" element={<ApiTokens />} />
             <Route path="/api-reference" element={<ApiReference />} />
             <Route path="/login" element={<Login />} />

@@ -98,6 +98,7 @@ async def execute_relevance_check(
     conversation_history: list[dict[str, str]],
     *,
     llm,
+    orchestrator=None,
     trace_id: str | None = None,
 ) -> RelevanceCheckResult | None:
     """
@@ -119,7 +120,10 @@ async def execute_relevance_check(
 
     model = getattr(settings, "conversation_relevance_check_model", None) or ""
     if not model:
-        model = get_model_for_task("conversation_relevance_check")
+        if orchestrator:
+            model = orchestrator.get_model_for_task("conversation_relevance_check")
+        else:
+            model = get_model_for_task("conversation_relevance_check")
 
     prompt = _RELEVANCE_CHECK_PROMPT.format(
         effective_query=effective_query[:500],

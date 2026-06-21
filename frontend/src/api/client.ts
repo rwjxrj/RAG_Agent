@@ -260,6 +260,24 @@ export interface EmbeddingConfigUpdate {
   embedding_base_url?: string
 }
 
+export interface RerankerConfig {
+  reranker_provider: 'local' | 'cloud' | 'custom'
+  reranker_model: string
+  reranker_url: string
+  reranker_api_format: 'rerank' | 'openai'
+  reranker_base_url: string
+  reranker_api_key: string
+}
+
+export interface RerankerConfigUpdate {
+  reranker_provider?: 'local' | 'cloud' | 'custom'
+  reranker_model?: string
+  reranker_url?: string
+  reranker_api_format?: 'rerank' | 'openai'
+  reranker_base_url?: string
+  reranker_api_key?: string
+}
+
 export interface Intent {
   id: string
   key: string
@@ -372,6 +390,10 @@ export const admin = {
     http.get<EmbeddingConfig>(`/admin/config/embedding`).then((res) => res.data),
   updateEmbeddingConfig: (data: EmbeddingConfigUpdate) =>
     http.put<EmbeddingConfig>(`/admin/config/embedding`, data).then((res) => res.data),
+  getRerankerConfig: () =>
+    http.get<RerankerConfig>(`/admin/config/reranker`).then((res) => res.data),
+  updateRerankerConfig: (data: RerankerConfigUpdate) =>
+    http.put<RerankerConfig>(`/admin/config/reranker`, data).then((res) => res.data),
   getArchiConfig: () => http.get<ArchiConfig>(`/admin/config/archi`).then((res) => res.data),
   updateArchiConfig: (data: ArchiConfigUpdate) =>
     http.put<ArchiConfig>(`/admin/config/archi`, data).then((res) => res.data),
@@ -444,13 +466,6 @@ export interface FetchFromUrlResponse {
   raw_html?: string | null
 }
 
-export interface CrawlWebsiteResponse {
-  status: string
-  pages_crawled: number
-  pages_ingested: number
-  pages: Array<{ url: string; title: string; doc_type: string }>
-}
-
 export interface ReCrawlAllResponse {
   status: string
   total: number
@@ -513,18 +528,6 @@ export const documents = {
     }),
   delete: (id: string) =>
     api<void>(`/documents/${id}`, { method: 'DELETE' }),
-  crawlWebsite: (params: {
-    url: string
-    max_pages?: number
-    max_depth?: number
-    ingest?: boolean
-    exclude_prefixes?: string[]
-    render_js?: boolean
-  }) =>
-    api<CrawlWebsiteResponse>(`/documents/crawl-website`, {
-      method: 'POST',
-      body: JSON.stringify(params),
-    }),
   /** Re-crawl all documents with http(s) source_url. Fetches latest content and re-ingests. */
   reCrawlAll: () =>
     api<ReCrawlAllResponse>(`/documents/re-crawl-all`, { method: 'POST' }),
@@ -703,4 +706,24 @@ export const tickets = {
     )
   },
   get: (id: string) => api<TicketDetail>(`/tickets/${id}`),
+}
+
+// --- Health Check ---
+
+export interface HealthCheckItem {
+  name: string
+  status: 'ok' | 'error' | 'timeout'
+  detail: string
+  latency_ms: number
+  warning?: string
+}
+
+export interface HealthCheckResponse {
+  status: 'healthy' | 'degraded' | 'unhealthy'
+  checks: HealthCheckItem[]
+  summary: { total: number; ok: number; failed: number; warnings: number }
+}
+
+export function runHealthCheck() {
+  return api<HealthCheckResponse>('/health/check', { method: 'POST' })
 }

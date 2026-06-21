@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.search.base import EvidenceChunk
 from app.services.evidence_hygiene import compute_hygiene
+from app.services.normalization import to_str_list as _to_str_list
 
 logger = get_logger(__name__)
 
@@ -129,14 +130,6 @@ def _coerce_float(v: Any, default: float) -> float:
         return x
     except Exception:
         return default
-
-
-def _to_str_list(v: Any) -> list[str]:
-    if not v:
-        return []
-    if isinstance(v, list):
-        return [str(x) for x in v if x is not None]
-    return [str(v)]
 
 
 async def evaluate_quality(

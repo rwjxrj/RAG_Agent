@@ -2,12 +2,13 @@
 
 from app.services.decision_router import route as decision_route
 from app.services.flow_debug import _pipeline_log
-from app.services.orchestrator import OrchestratorContext, PhaseResult
+from app.services.orchestrator import OrchestratorContext
+from app.services.schemas import DecideResult
 
 
-async def execute_decide(ctx: OrchestratorContext) -> PhaseResult:
+async def execute_decide(ctx: OrchestratorContext) -> DecideResult:
     """Run decision router to determine answer lane."""
-    required_evidence = ctx.extra.get("required_evidence", [])
+    required_evidence = ctx.retrieve_output.active_required_evidence
     dr = decision_route(
         ctx.query_spec,
         ctx.quality_report,
@@ -36,4 +37,4 @@ async def execute_decide(ctx: OrchestratorContext) -> PhaseResult:
                 escalation_rate.inc()
             except Exception:
                 pass
-    return PhaseResult(decision_result=dr)
+    return DecideResult(decision_result=dr)

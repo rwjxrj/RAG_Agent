@@ -9,6 +9,7 @@ from app.services.answer_utils import render_calibrated_candidate
 from app.services.flow_debug import build_flow_debug
 from app.services.final_polish import polish as final_polish
 from app.services.archi_config import get_final_polish_enabled, get_page_kind_filter_enabled
+from app.services.model_router import get_model_for_task
 from app.services.orchestrator import OrchestratorAction, OrchestratorContext
 from app.services.schemas import AnswerOutput
 
@@ -37,24 +38,24 @@ def format_phase_timings(raw_timings: dict | None) -> dict[str, float]:
 
 
 def _attach_runtime_debug(debug_payload: dict, ctx: OrchestratorContext) -> None:
-    timings = format_phase_timings(ctx.extra.get("phase_timings"))
+    timings = format_phase_timings(ctx.orchestrator_debug.phase_timings)
     debug_payload["timings"] = timings
     debug_payload.update(timings)
     debug_payload["retry_count"] = max(0, int(ctx.retrieval_attempt or 0))
 
 
 def _format_target_label(query_spec) -> str:
-    slots = getattr(query_spec, "resolved_slots", None) or {}
+    slots = query_spec.query_slots.resolved_slots or {}
     product_type = str(slots.get("product_type", "") or "").strip().lower()
     os_name = str(slots.get("os", "") or "").strip().lower()
     if product_type == "vps" and os_name:
         return f"{os_name.title()} VPS"
-    target_entity = str(getattr(query_spec, "target_entity", "") or "").strip()
+    target_entity = str(query_spec.query_intent.target_entity or "").strip()
     if target_entity:
         text = target_entity.replace("_", " ").strip()
         if text and "availability by location" not in text.lower():
             return text
-    for entity in list(getattr(query_spec, "entities", None) or []):
+    for entity in list(query_spec.query_intent.entities or []):
         text = str(entity or "").strip()
         lowered = text.lower()
         if text and any(token in lowered for token in ("vps", "server", "hosting", "proxy")):
@@ -65,13 +66,13 @@ def _format_target_label(query_spec) -> str:
 def _is_availability_gap_query(query_spec) -> bool:
     if not query_spec:
         return False
-    answer_type = str(getattr(query_spec, "answer_type", "") or "").strip().lower()
+    answer_type = query_spec.answer_contract.answer_type.strip().lower()
     if answer_type in {"policy", "direct_link", "account", "clarification"}:
         return False
-    answer_shape = str(getattr(query_spec, "answer_shape", "") or "").strip().lower()
+    answer_shape = query_spec.answer_contract.answer_shape.strip().lower()
     families = {
         str(item or "").strip().lower()
-        for item in (getattr(query_spec, "evidence_families", None) or [])
+        for item in (query_spec.retrieval_hints.evidence_families or [])
         if str(item or "").strip()
     }
     return answer_shape == "yes_no" and (
@@ -100,28 +101,26 @@ async def build_output(
     ctx: OrchestratorContext,
     action: OrchestratorAction,
     *,
-    get_model_for_query,
+    orchestrator=None,
 ) -> AnswerOutput:
     """Build AnswerOutput for terminal actions (DONE, ASK_USER, ESCALATE)."""
     settings = get_settings()
-    extra = ctx.extra
     usage_list = llm_usage_var.get() or []
     llm_call_log = llm_call_log_var.get() or []
     cost_usd, agg_tokens, usage_breakdown = compute_message_cost(usage_list)
-    llm_resp = extra.get("llm_resp")
+    llm_resp = ctx.generate_output.llm_resp
     llm_tokens_for_debug = (
         agg_tokens if (agg_tokens["input"] or agg_tokens["output"]) else
         ({"input": llm_resp.input_tokens, "output": llm_resp.output_tokens} if llm_resp else None)
     )
     evidence_pack = ctx.evidence_pack
     evidence = ctx.evidence
-    messages = extra.get("messages", [])
-    llm_resp = extra.get("llm_resp")
-    retry_strategy_applied = extra.get("retry_strategy_applied")
-    evidence_eval = extra.get("evidence_eval_result")
-    self_critic_regenerated = extra.get("self_critic_regenerated", False)
+    messages = ctx.generate_output.messages
+    retry_strategy_applied = ctx.retrieve_output.retry_strategy_applied
+    evidence_eval = ctx.retrieve_output.evidence_eval_result
+    self_critic_regenerated = ctx.generate_output.self_critic_regenerated
     attempt = ctx.retrieval_attempt + 1
-    model = get_model_for_query(ctx.query)
+    model = orchestrator.get_model_for_query(ctx.query) if orchestrator else get_model_for_task("generate")
 
     evidence_eval_debug = None
     if evidence_eval:
@@ -153,13 +152,14 @@ async def build_output(
     if action == OrchestratorAction.DONE:
         answer = ctx.answer
         followup = list(ctx.followup or [])
+        candidate = None
         if (
             bool(getattr(settings, "soft_contract_enabled", True))
             and bool(getattr(settings, "answer_candidate_enabled", True))
         ):
             candidate = (
-                dict(extra.get("answer_candidate"))
-                if isinstance(extra.get("answer_candidate"), dict)
+            dict(ctx.generate_output.answer_candidate)
+            if isinstance(ctx.generate_output.answer_candidate, dict)
                 else None
             )
             calibrated_lane = (
@@ -173,12 +173,12 @@ async def build_output(
                 fallback_answer=answer,
                 fallback_followup=followup,
             )
-            extra["candidate_render_applied"] = bool(candidate)
+        ctx.orchestrator_debug.candidate_render_applied = bool(candidate)
         if get_final_polish_enabled():
             polished = await final_polish(answer)
             if polished:
                 answer = polished
-                extra["final_polish_applied"] = True
+            ctx.orchestrator_debug.final_polish_applied = True
         try:
             from app.core.metrics import decision_total
             decision_total.labels(decision="PASS").inc()
@@ -203,13 +203,13 @@ async def build_output(
             source_lang=ctx.source_lang,
             evidence_eval_result=evidence_eval_debug,
             self_critic_regenerated=self_critic_regenerated,
-            final_polish_applied=extra.get("final_polish_applied", False),
+            final_polish_applied=ctx.orchestrator_debug.final_polish_applied,
             answer_plan=ctx.answer_plan,
             review_result=ctx.review_result,
             stage_reasons=ctx.stage_reasons,
             termination_reason=ctx.termination_reason,
             hypothesis_judge=ctx.hypothesis_judge,
-            conversation_relevance=ctx.extra.get("conversation_relevance"),
+            conversation_relevance=ctx.generate_output.conversation_relevance,
         )
         debug_payload["rollout_flags"] = rollout_debug
         _attach_runtime_debug(debug_payload, ctx)
@@ -229,10 +229,10 @@ async def build_output(
             escalation_rate.inc()
         except Exception:
             pass
-        rr = getattr(ctx, "_last_reviewer_result", None)
+        rr = ctx.last_reviewer_result
         forced_handoff = bool(ctx.review_result and ctx.review_result.final_lane == "ESCALATE")
         escalate_answer = "" if forced_handoff else ctx.answer
-        if extra.get("error"):
+        if ctx.orchestrator_debug.error:
             escalate_answer = "I'm sorry, I encountered an error. Please try again or contact support."
         elif not escalate_answer:
             escalate_answer = "This request requires human review. A support agent will follow up."
@@ -260,7 +260,7 @@ async def build_output(
             stage_reasons=ctx.stage_reasons,
             termination_reason=ctx.termination_reason,
             hypothesis_judge=ctx.hypothesis_judge,
-            conversation_relevance=ctx.extra.get("conversation_relevance"),
+            conversation_relevance=ctx.generate_output.conversation_relevance,
         )
         debug_payload["rollout_flags"] = rollout_debug
         _attach_runtime_debug(debug_payload, ctx)
@@ -280,7 +280,7 @@ async def build_output(
         except Exception:
             pass
         dr = ctx.decision_result
-        rr = getattr(ctx, "_last_reviewer_result", None)
+        rr = ctx.last_reviewer_result
         if dr and dr.decision != "PASS":
             debug_payload = build_flow_debug(
                 trace_id=ctx.trace_id,
@@ -303,7 +303,7 @@ async def build_output(
                 stage_reasons=ctx.stage_reasons,
                 termination_reason=ctx.termination_reason,
                 hypothesis_judge=ctx.hypothesis_judge,
-                conversation_relevance=ctx.extra.get("conversation_relevance"),
+            conversation_relevance=ctx.generate_output.conversation_relevance,
             )
             debug_payload["rollout_flags"] = rollout_debug
             _attach_runtime_debug(debug_payload, ctx)
@@ -362,7 +362,7 @@ async def build_output(
             stage_reasons=ctx.stage_reasons,
             termination_reason=ctx.termination_reason,
             hypothesis_judge=ctx.hypothesis_judge,
-            conversation_relevance=ctx.extra.get("conversation_relevance"),
+            conversation_relevance=ctx.generate_output.conversation_relevance,
         )
         debug_payload["rollout_flags"] = rollout_debug
         _attach_runtime_debug(debug_payload, ctx)

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { documents, admin, docTypeLabel, type Document, type DocType } from '../api/client'
 import {
@@ -19,7 +19,50 @@ import {
   Globe,
   Sparkles,
   RefreshCw,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react'
+
+const SUPPORTED_UPLOAD_EXTENSIONS = ['.txt', '.md', '.pdf'] as const
+const SUPPORTED_UPLOAD_ACCEPT = SUPPORTED_UPLOAD_EXTENSIONS.join(',')
+const SUPPORTED_UPLOAD_LABEL = SUPPORTED_UPLOAD_EXTENSIONS.join('、')
+
+function getUploadFileError(file: File) {
+  const lowerName = file.name.toLowerCase()
+  const isSupported = SUPPORTED_UPLOAD_EXTENSIONS.some((ext) => lowerName.endsWith(ext))
+  return isSupported ? null : `仅支持 ${SUPPORTED_UPLOAD_LABEL} 文件`
+}
+
+function getFileTitle(file: File) {
+  return file.name.replace(/\.[^.]+$/, '') || file.name
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+type UploadQueueStatus = 'pending' | 'uploading' | 'success' | 'error' | 'invalid'
+
+type UploadQueueItem = {
+  id: string
+  file: File
+  status: UploadQueueStatus
+  message?: string
+}
+
+function createUploadQueue(files: File[]) {
+  return files.map((file, index) => {
+    const fileError = getUploadFileError(file)
+    return {
+      id: `${file.name}-${file.size}-${file.lastModified}-${index}`,
+      file,
+      status: fileError ? 'invalid' : 'pending',
+      message: fileError ?? undefined,
+    } satisfies UploadQueueItem
+  })
+}
 
 const DOC_TYPE_COLORS: Record<string, string> = {
   policy: 'text-blue-400 bg-blue-500/10 border-blue-500/15',
@@ -32,6 +75,8 @@ const DOC_TYPE_COLORS: Record<string, string> = {
 
 export default function DocumentList() {
   const navigate = useNavigate()
+  const dropzoneInputRef = useRef<HTMLInputElement>(null)
+  const dragDepthRef = useRef(0)
   const [items, setItems] = useState<Document[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -44,7 +89,8 @@ export default function DocumentList() {
   const [ingesting, setIngesting] = useState(false)
   const [ingestResult, setIngestResult] = useState<{ ok: number; skipped: number; error: number } | null>(null)
   const [showUploadModal, setShowUploadModal] = useState(false)
-  const [showCrawlModal, setShowCrawlModal] = useState(false)
+  const [uploadInitialFiles, setUploadInitialFiles] = useState<File[]>([])
+  const [dropzoneDragging, setDropzoneDragging] = useState(false)
   const [reCrawlAllLoading, setReCrawlAllLoading] = useState(false)
   const [reCrawlAllResult, setReCrawlAllResult] = useState<{ total: number; updated: number; skipped: number; error: number; errors: string[] } | null>(null)
   const [reCrawlId, setReCrawlId] = useState<string | null>(null)
@@ -152,6 +198,41 @@ export default function DocumentList() {
     }
   }
 
+  const openUploadModal = (files: File[] = []) => {
+    setUploadInitialFiles(files)
+    setShowUploadModal(true)
+  }
+
+  const handleDropzoneFiles = (files: FileList | null) => {
+    const selectedFiles = Array.from(files ?? [])
+    if (selectedFiles.length === 0) return
+    openUploadModal(selectedFiles)
+  }
+
+  const handleDropzoneDragEnter = (e: React.DragEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    dragDepthRef.current += 1
+    setDropzoneDragging(true)
+  }
+
+  const handleDropzoneDragOver = (e: React.DragEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleDropzoneDragLeave = (e: React.DragEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDropzoneDragging(false)
+  }
+
+  const handleDropzoneDrop = (e: React.DragEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    dragDepthRef.current = 0
+    setDropzoneDragging(false)
+    handleDropzoneFiles(e.dataTransfer.files)
+  }
+
   const totalPages = Math.ceil(total / pageSize)
   const visibleChunks = items.reduce((sum, item) => sum + item.chunks_count, 0)
   const crawlableCount = items.filter((item) => isCrawlable(item.source_url)).length
@@ -211,7 +292,43 @@ export default function DocumentList() {
             </div>
           </div>
 
-          <div className="mt-6 border-t border-white/[0.06] pt-5">
+          <input
+            ref={dropzoneInputRef}
+            type="file"
+            accept={SUPPORTED_UPLOAD_ACCEPT}
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              handleDropzoneFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => dropzoneInputRef.current?.click()}
+            onDragEnter={handleDropzoneDragEnter}
+            onDragOver={handleDropzoneDragOver}
+            onDragLeave={handleDropzoneDragLeave}
+            onDrop={handleDropzoneDrop}
+            className={`mt-6 flex min-h-[132px] w-full flex-col items-center justify-center rounded-2xl border border-dashed px-6 py-6 text-center transition-colors ${
+              dropzoneDragging
+                ? 'border-blue-400 bg-blue-50/80 shadow-[0_12px_28px_rgba(37,99,235,0.12)]'
+                : 'border-sky-200 bg-white/45 hover:border-blue-300 hover:bg-white/70'
+            }`}
+            aria-label="拖入或批量选择文件上传到文档库"
+          >
+            <span className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_10px_20px_rgba(37,99,235,0.2)]">
+              <Upload size={18} />
+            </span>
+            <span className="text-base font-semibold text-zinc-900">
+              拖入一个或多个文件上传到知识库
+            </span>
+            <span className="mt-2 text-sm leading-6 text-zinc-500">
+              或点击批量选择文件，支持 {SUPPORTED_UPLOAD_LABEL}
+            </span>
+          </button>
+
+          <div className="mt-5 border-t border-white/[0.06] pt-5">
             <div className="flex flex-wrap gap-2.5">
               <button
                 className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium"
@@ -222,18 +339,10 @@ export default function DocumentList() {
               </button>
               <button
                 className="btn-ghost inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
-                onClick={() => setShowUploadModal(true)}
+                onClick={() => openUploadModal()}
               >
                 <Upload size={15} />
                 上传文件
-              </button>
-              <button
-                className="btn-ghost inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
-                onClick={() => setShowCrawlModal(true)}
-                title="抓取整个网站并将所有页面作为文档添加"
-              >
-                <Globe size={15} />
-                抓取网站
               </button>
               <button
                 className="btn-ghost inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
@@ -529,22 +638,19 @@ export default function DocumentList() {
       )}
       {showUploadModal && (
         <UploadFileModal
+          initialFiles={uploadInitialFiles}
           docTypeOptions={docTypeOptions}
-          onSuccess={(doc) => {
+          onSuccess={(docs, totalFiles) => {
+            load()
+            if (docs.length === 1 && totalFiles === 1) {
+              setShowUploadModal(false)
+              setUploadInitialFiles([])
+            }
+          }}
+          onCancel={() => {
             setShowUploadModal(false)
-            load()
-            navigate(`/documents/${doc.id}`)
+            setUploadInitialFiles([])
           }}
-          onCancel={() => setShowUploadModal(false)}
-        />
-      )}
-      {showCrawlModal && (
-        <CrawlWebsiteModal
-          onSuccess={() => {
-            setShowCrawlModal(false)
-            load()
-          }}
-          onCancel={() => setShowCrawlModal(false)}
         />
       )}
     </div>
@@ -685,95 +791,191 @@ function CreateDocumentModal({
 }
 
 function UploadFileModal({
+  initialFiles,
   docTypeOptions,
   onSuccess,
   onCancel,
 }: {
+  initialFiles?: File[]
   docTypeOptions: Array<{ key: string; label: string }>
-  onSuccess: (doc: Document) => void
+  onSuccess: (docs: Document[], totalFiles: number) => void
   onCancel: () => void
 }) {
-  const [file, setFile] = useState<File | null>(null)
-  const [title, setTitle] = useState('')
+  const [uploadItems, setUploadItems] = useState<UploadQueueItem[]>(() => createUploadQueue(initialFiles ?? []))
+  const [singleTitle, setSingleTitle] = useState(() => initialFiles?.length === 1 ? getFileTitle(initialFiles[0]) : '')
   const [docType, setDocType] = useState('other')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [completed, setCompleted] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
+
+  useEffect(() => {
+    const files = initialFiles ?? []
+    setUploadItems(createUploadQueue(files))
+    setSingleTitle(files.length === 1 ? getFileTitle(files[0]) : '')
+    setError(null)
+    setCompleted(false)
+    setUploadProgress(null)
+  }, [initialFiles])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    setFile(f ?? null)
+    const files = Array.from(e.target.files ?? [])
     setError(null)
-    if (f) setTitle((prev) => prev || f.name.replace(/\.[^.]+$/, ''))
+    setCompleted(false)
+    setUploadProgress(null)
+    if (files.length === 0) {
+      setUploadItems([])
+      setSingleTitle('')
+      return
+    }
+    setUploadItems(createUploadQueue(files))
+    setSingleTitle(files.length === 1 ? getFileTitle(files[0]) : '')
   }
 
   const handleSubmit = async () => {
-    if (!file) {
+    if (uploadItems.length === 0) {
       setError('请选择文件')
       return
     }
-    const ext = file.name.toLowerCase().split('.').pop()
-    if (!['txt', 'md', 'pdf'].includes(ext || '')) {
-      setError('仅支持 .txt、.md 和 .pdf 文件')
+    const uploadableItems = uploadItems.filter((item) => item.status !== 'invalid')
+    if (uploadableItems.length === 0) {
+      setError('没有可上传的有效文件')
       return
     }
     setSubmitting(true)
+    setCompleted(false)
     setError(null)
+    setUploadProgress({ done: 0, total: uploadableItems.length })
+    const uploadedDocs: Document[] = []
+    let processed = 0
     try {
-      const doc = await documents.upload(file, {
-        title: title.trim() || undefined,
-        doc_type: docType,
-      })
-      onSuccess(doc)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '上传失败')
+      for (const item of uploadableItems) {
+        setUploadItems((prev) => prev.map((current) => (
+          current.id === item.id ? { ...current, status: 'uploading', message: '上传中' } : current
+        )))
+        try {
+          const doc = await documents.upload(item.file, {
+            title: uploadItems.length === 1 ? singleTitle.trim() || getFileTitle(item.file) : getFileTitle(item.file),
+            doc_type: docType,
+          })
+          uploadedDocs.push(doc)
+          setUploadItems((prev) => prev.map((current) => (
+            current.id === item.id ? { ...current, status: 'success', message: '上传成功' } : current
+          )))
+        } catch (e) {
+          setUploadItems((prev) => prev.map((current) => (
+            current.id === item.id
+              ? { ...current, status: 'error', message: e instanceof Error ? e.message : '上传失败' }
+              : current
+          )))
+        } finally {
+          processed += 1
+          setUploadProgress({ done: processed, total: uploadableItems.length })
+        }
+      }
+      setCompleted(true)
+      if (uploadedDocs.length > 0) onSuccess(uploadedDocs, uploadItems.length)
     } finally {
       setSubmitting(false)
     }
   }
 
+  const successCount = uploadItems.filter((item) => item.status === 'success').length
+  const failedCount = uploadItems.filter((item) => item.status === 'error').length
+  const invalidCount = uploadItems.filter((item) => item.status === 'invalid').length
+  const pendingCount = uploadItems.filter((item) => item.status === 'pending').length
+  const hasSingleEditableFile = uploadItems.length === 1 && uploadItems[0].status !== 'invalid'
+  const uploadButtonLabel = submitting && uploadProgress
+    ? `上传中 ${uploadProgress.done}/${uploadProgress.total}`
+    : completed
+      ? '上传完成'
+      : uploadItems.length > 1
+        ? `上传 ${uploadItems.filter((item) => item.status !== 'invalid').length} 个文件`
+        : '上传'
+
+  const renderItemStatus = (item: UploadQueueItem) => {
+    if (item.status === 'uploading') return <Loader2 size={15} className="animate-spin-slow text-blue-300" />
+    if (item.status === 'success') return <CheckCircle2 size={15} className="text-emerald-300" />
+    if (item.status === 'error' || item.status === 'invalid') return <AlertCircle size={15} className="text-red-300" />
+    return <FileText size={15} className="text-zinc-500" />
+  }
+
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
-      <div className="glass rounded-2xl w-full max-w-[480px] shadow-2xl animate-slide-up gradient-border" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={() => { if (!submitting) onCancel() }}>
+      <div className="glass rounded-2xl w-full max-w-[560px] max-h-[90vh] overflow-y-auto shadow-2xl animate-slide-up gradient-border" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center px-6 py-5 border-b border-white/[0.04]">
           <h2 className="text-base font-semibold text-white">上传文件</h2>
-          <button className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors" onClick={onCancel} aria-label="关闭">
+          <button className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors disabled:opacity-40 disabled:cursor-not-allowed" onClick={onCancel} disabled={submitting} aria-label="关闭">
             <X size={18} />
           </button>
         </div>
         <div className="p-6 space-y-4">
           {error && <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/20 text-red-300 text-sm">{error}</div>}
+          {completed && (
+            <div className="p-3.5 rounded-xl bg-white/[0.04] border border-white/[0.07] text-sm text-zinc-300">
+              批量处理完成：成功 {successCount} 个，失败 {failedCount} 个，跳过 {invalidCount} 个。
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-zinc-400 mb-2">文件 <span className="text-danger">*</span></label>
             <input
               type="file"
-              accept=".txt,.md,.pdf"
+              accept={SUPPORTED_UPLOAD_ACCEPT}
+              multiple
+              disabled={submitting}
               onChange={handleFileChange}
-              className="block w-full text-sm text-zinc-300 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-medium file:bg-violet-500/10 file:text-violet-400 hover:file:bg-violet-500/15 file:cursor-pointer file:transition-colors"
+              className="block w-full text-sm text-zinc-300 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-medium file:bg-violet-500/10 file:text-violet-400 hover:file:bg-violet-500/15 file:cursor-pointer file:transition-colors disabled:opacity-50"
             />
-            {file && (
-              <p className="mt-2 text-xs text-zinc-500">{file.name} ({(file.size / 1024).toFixed(1)} KB)</p>
-            )}
+            <p className="mt-2 text-xs text-zinc-500">支持 {SUPPORTED_UPLOAD_LABEL}</p>
           </div>
-          <div>
+          {uploadItems.length > 0 && (
+            <div className="max-h-56 space-y-2 overflow-y-auto rounded-xl border border-white/[0.06] bg-black/10 p-2">
+              {uploadItems.map((item) => (
+                <div key={item.id} className="flex items-start gap-3 rounded-lg bg-white/[0.03] px-3 py-2">
+                  <div className="mt-0.5 shrink-0">{renderItemStatus(item)}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-zinc-200">{item.file.name}</div>
+                    <div className="mt-0.5 text-xs text-zinc-500">{formatFileSize(item.file.size)}</div>
+                    {item.message && (
+                      <div className={`mt-1 text-xs ${
+                        item.status === 'success'
+                          ? 'text-emerald-300'
+                          : item.status === 'error' || item.status === 'invalid'
+                            ? 'text-red-300'
+                            : 'text-blue-300'
+                      }`}>
+                        {item.message}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {hasSingleEditableFile && (
+            <div>
             <label className="block text-sm font-medium text-zinc-400 mb-2">标题</label>
-            <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="文档标题（默认使用文件名）" className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" />
-          </div>
+            <input type="text" value={singleTitle} onChange={(e) => setSingleTitle(e.target.value)} disabled={submitting} placeholder="文档标题（默认使用文件名）" className="w-full px-4 py-2.5 rounded-xl input-glass text-sm disabled:opacity-50" />
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-zinc-400 mb-2">类型</label>
-            <select value={docType} onChange={(e) => setDocType(e.target.value)} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" aria-label="类型">
+            <select value={docType} onChange={(e) => setDocType(e.target.value)} disabled={submitting} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm disabled:opacity-50" aria-label="类型">
               {docTypeOptions.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
           </div>
         </div>
         <div className="flex justify-end gap-2.5 px-6 py-5 border-t border-white/[0.04]">
-          <button className="btn-ghost px-4 py-2.5 rounded-xl text-sm font-medium" onClick={onCancel}>取消</button>
+          <button className="btn-ghost px-4 py-2.5 rounded-xl text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed" onClick={onCancel} disabled={submitting}>
+            {completed ? '完成' : '取消'}
+          </button>
           <button
             className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={handleSubmit}
-            disabled={submitting || !file}
+            disabled={submitting || completed || uploadItems.length === 0 || pendingCount === 0}
           >
             {submitting && <Loader2 size={14} className="animate-spin-slow" />}
-            {submitting ? '处理中...' : '上传'}
+            {uploadButtonLabel}
           </button>
         </div>
       </div>
@@ -781,159 +983,3 @@ function UploadFileModal({
   )
 }
 
-function CrawlWebsiteModal({
-  onSuccess,
-  onCancel,
-}: {
-  onSuccess: () => void
-  onCancel: () => void
-}) {
-  const [url, setUrl] = useState('')
-  const [maxPages, setMaxPages] = useState(50)
-  const [maxDepth, setMaxDepth] = useState(3)
-  const [ingest, setIngest] = useState(true)
-  const [renderJs, setRenderJs] = useState(false)
-  const [excludePrefixes, setExcludePrefixes] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [crawling, setCrawling] = useState(false)
-  const [result, setResult] = useState<{ pages_crawled: number; pages_ingested: number; pages: Array<{ url: string; title: string }> } | null>(null)
-  const effectiveMaxPages = renderJs ? 1 : maxPages
-  const effectiveMaxDepth = renderJs ? 0 : maxDepth
-
-  const handleCrawl = async () => {
-    if (!url.trim()) {
-      setError('请输入网站 URL')
-      return
-    }
-    setCrawling(true)
-    setError(null)
-    setResult(null)
-    try {
-      const prefixes = excludePrefixes
-        .split('\n')
-        .map((p) => p.trim())
-        .filter(Boolean)
-      const res = await documents.crawlWebsite({
-        url: url.trim(),
-        max_pages: effectiveMaxPages,
-        max_depth: effectiveMaxDepth,
-        ingest,
-        exclude_prefixes: prefixes.length > 0 ? prefixes : undefined,
-        render_js: renderJs,
-      })
-      setResult({
-        pages_crawled: res.pages_crawled,
-        pages_ingested: res.pages_ingested,
-        pages: res.pages,
-      })
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '抓取失败')
-    } finally {
-      setCrawling(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
-      <div className="glass rounded-2xl w-full max-w-[560px] max-h-[90vh] overflow-y-auto shadow-2xl animate-slide-up gradient-border" onClick={(e) => e.stopPropagation()}>
-        <div className="flex justify-between items-center px-6 py-5 border-b border-white/[0.04]">
-          <h2 className="text-base font-semibold text-white">抓取网站</h2>
-          <button className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors" onClick={onCancel} aria-label="关闭">
-            <X size={18} />
-          </button>
-        </div>
-        <div className="p-6 space-y-4">
-          <p className="text-sm text-zinc-500">
-            默认从起始 URL 抓取同域名页面。开启 JavaScript 渲染时只抓取当前页面，适合动态渲染内容。
-          </p>
-          {error && <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/20 text-red-300 text-sm">{error}</div>}
-          <div>
-            <label className="block text-sm font-medium text-zinc-400 mb-2">网站 URL <span className="text-danger">*</span></label>
-            <input type="url" value={url} onChange={(e) => { setUrl(e.target.value); setError(null) }} placeholder="https://example.com" className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" disabled={crawling} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-zinc-400 mb-2">排除的 URL 前缀</label>
-            <textarea
-              value={excludePrefixes}
-              onChange={(e) => setExcludePrefixes(e.target.value)}
-              placeholder={'https://example.com/admin\nhttps://example.com/private'}
-              rows={2}
-              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono resize-y"
-              disabled={crawling}
-              aria-label="排除前缀"
-            />
-            <p className="mt-1.5 text-xs text-zinc-500">每行一个前缀。匹配任意前缀的 URL 都会被跳过。</p>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-zinc-400 mb-2">最大页面数</label>
-              <input type="number" min={1} max={500} value={effectiveMaxPages} onChange={(e) => setMaxPages(Math.min(500, Math.max(1, parseInt(e.target.value, 10) || 50)))} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" disabled={crawling || renderJs} />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-zinc-400 mb-2">最大深度</label>
-              <input
-                type="number"
-                min={0}
-                max={10}
-                value={effectiveMaxDepth}
-                onChange={(e) => {
-                  const next = parseInt(e.target.value, 10)
-                  setMaxDepth(Math.min(10, Math.max(0, Number.isNaN(next) ? 3 : next)))
-                }}
-                className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
-                disabled={crawling || renderJs}
-              />
-            </div>
-          </div>
-          {renderJs && (
-            <p className="text-xs text-zinc-500">
-              JavaScript 渲染模式会启动浏览器，已自动限制为只抓取当前 URL，避免整站动态抓取超时。
-            </p>
-          )}
-          <label className="flex items-center gap-2.5 text-sm text-zinc-400 cursor-pointer">
-            <input type="checkbox" checked={ingest} onChange={(e) => setIngest(e.target.checked)} disabled={crawling} className="rounded border-white/10 bg-transparent" />
-            将抓取到的页面导入知识库
-          </label>
-          <label className="flex items-center gap-2.5 text-sm text-zinc-400 cursor-pointer">
-            <input type="checkbox" checked={renderJs} onChange={(e) => setRenderJs(e.target.checked)} disabled={crawling} className="rounded border-white/10 bg-transparent" />
-            使用浏览器渲染 JavaScript 后抓取页面内容
-          </label>
-          {result && (
-            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-sm animate-fade-in">
-              <p className="font-medium mb-1.5">抓取完成</p>
-              <p>共抓取 <strong>{result.pages_crawled}</strong> 个页面，已导入 <strong>{result.pages_ingested}</strong> 个。</p>
-              {result.pages.length > 0 && (
-                <div className="mt-3 max-h-40 overflow-y-auto space-y-1 text-xs">
-                  {result.pages.slice(0, 15).map((p) => (
-                    <div key={p.url} className="truncate text-emerald-200/80" title={p.url}>{p.title || p.url}</div>
-                  ))}
-                  {result.pages.length > 15 && <div className="text-zinc-500">... 以及另外 {result.pages.length - 15} 个</div>}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        <div className="flex justify-end gap-2.5 px-6 py-5 border-t border-white/[0.04]">
-          <button className="btn-ghost px-4 py-2.5 rounded-xl text-sm font-medium" onClick={onCancel}>
-            {result ? '关闭' : '取消'}
-          </button>
-          {!result && (
-            <button
-              className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={handleCrawl}
-              disabled={crawling || !url.trim()}
-            >
-              {crawling && <Loader2 size={14} className="animate-spin-slow" />}
-              {crawling ? '抓取中...（可能需要几分钟）' : '开始抓取'}
-            </button>
-          )}
-          {result && (
-            <button className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium" onClick={onSuccess}>
-              完成
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}

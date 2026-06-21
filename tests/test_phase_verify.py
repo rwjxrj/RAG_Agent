@@ -97,7 +97,7 @@ async def test_verify_runs_multi_hypothesis_judge_when_history_present():
     phases.verify._pipeline_log = lambda *args, **kwargs: None
 
     ctx = _ctx()
-    ctx.extra["hypothesis_history"] = [
+    ctx.retrieve_output.hypothesis_history = [
         {"name": "primary", "retrieval_profile": "policy_profile", "evidence_families": ["policy_terms"], "quality_score": 0.2, "gate_pass": False, "evidence_count": 4},
         {"name": "fallback_capability", "retrieval_profile": "pricing_profile", "evidence_families": ["capability_availability"], "quality_score": 0.8, "gate_pass": True, "evidence_count": 5},
     ]
@@ -115,7 +115,7 @@ async def test_verify_forwards_answer_calibration_context():
     phases.verify._pipeline_log = lambda *args, **kwargs: None
 
     ctx = _ctx()
-    ctx.extra["answer_candidate"] = {
+    ctx.generate_output.answer_candidate = {
         "answer_type": "pricing",
         "answer_mode": "PASS_PARTIAL",
     }
@@ -128,4 +128,4 @@ async def test_verify_forwards_answer_calibration_context():
     assert reviewer.last_kwargs["acceptable_related_types"] == ["pricing"]
     assert reviewer.last_kwargs["answer_expectation"] == "exact"
     assert reviewer.last_kwargs["target_entity"] == "windows_vps"
-    assert reviewer.last_kwargs["answer_candidate"] == ctx.extra["answer_candidate"]
+    assert reviewer.last_kwargs["answer_candidate"] == ctx.generate_output.answer_candidate

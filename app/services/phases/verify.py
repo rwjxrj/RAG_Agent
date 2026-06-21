@@ -1,11 +1,12 @@
 """VERIFY phase: reviewer gate."""
 
 from app.services.flow_debug import _pipeline_log
-from app.services.orchestrator import OrchestratorContext, PhaseResult
+from app.services.orchestrator import OrchestratorContext
+from app.services.schemas import VerifyResult
 
 
 def _run_hypothesis_judge(ctx: OrchestratorContext) -> dict | None:
-    history = list(ctx.extra.get("hypothesis_history", []))
+    history = list(ctx.retrieve_output.hypothesis_history)
     if len(history) < 2:
         return None
     ranked = sorted(
@@ -27,11 +28,11 @@ def _run_hypothesis_judge(ctx: OrchestratorContext) -> dict | None:
     }
 
 
-async def execute_verify(ctx: OrchestratorContext, *, reviewer) -> PhaseResult:
+async def execute_verify(ctx: OrchestratorContext, *, reviewer) -> VerifyResult:
     """Run reviewer gate on generated answer."""
     dr = ctx.decision_result
     query_spec = ctx.query_spec
-    reviewer_decision = (ctx.generated_decision or ctx.extra.get("generated_decision") or "PASS").upper()
+    reviewer_decision = (ctx.generated_decision or ctx.generate_output.generated_decision or "PASS").upper()
     if reviewer_decision not in {"PASS", "ASK_USER", "ESCALATE"}:
         reviewer_decision = "PASS"
     reviewer_result = reviewer.review(
@@ -45,25 +46,25 @@ async def execute_verify(ctx: OrchestratorContext, *, reviewer) -> PhaseResult:
         max_attempts=ctx.max_attempts,
         answer_policy=dr.answer_policy if dr else "direct",
         lane=dr.resolved_lane() if dr else None,
-        expected_answer_type=(getattr(query_spec, "answer_type", None) if query_spec else None),
+        expected_answer_type=(query_spec.answer_contract.answer_type if query_spec else None),
         acceptable_related_types=(
-            list(getattr(query_spec, "acceptable_related_types", None) or [])
+            list(query_spec.answer_contract.acceptable_related_types or [])
             if query_spec
             else []
         ),
         answer_expectation=(
-            str(getattr(query_spec, "answer_expectation", "best_effort") or "best_effort")
+            str(query_spec.answer_contract.answer_expectation or "best_effort")
             if query_spec
             else "best_effort"
         ),
         target_entity=(
-            str(getattr(query_spec, "target_entity", "") or "").strip() or None
+            str(query_spec.query_intent.target_entity or "").strip() or None
             if query_spec
             else None
         ),
         answer_candidate=(
-            dict(ctx.extra.get("answer_candidate"))
-            if isinstance(ctx.extra.get("answer_candidate"), dict)
+            dict(ctx.generate_output.answer_candidate)
+            if isinstance(ctx.generate_output.answer_candidate, dict)
             else None
         ),
     )
@@ -76,7 +77,7 @@ async def execute_verify(ctx: OrchestratorContext, *, reviewer) -> PhaseResult:
         selected_hypothesis=(hypothesis_judge or {}).get("selected_hypothesis"),
         trace_id=ctx.trace_id,
     )
-    return PhaseResult(
+    return VerifyResult(
         reviewer_result=reviewer_result,
         hypothesis_judge=hypothesis_judge,
     )

@@ -173,14 +173,14 @@ def plan_retry(
         if raw_doc_types:
             valid = set(get_valid_doc_type_keys())
             filter_doc_types = [t for t in raw_doc_types if t in valid] if valid else raw_doc_types
-    elif query_spec and getattr(query_spec, "rewrite_candidates", None):
-        candidates = query_spec.rewrite_candidates or []
+    elif query_spec and query_spec.retrieval_hints.rewrite_candidates:
+        candidates = query_spec.retrieval_hints.rewrite_candidates or []
         if len(candidates) > 1:
             candidate_idx = min(attempt - 1, len(candidates) - 1)
             suggested_query = candidates[candidate_idx]
 
-    if query_spec and getattr(query_spec, "fallback_hypotheses", None):
-        fallbacks = query_spec.fallback_hypotheses or []
+    if query_spec and query_spec.retrieval_hints.fallback_hypotheses:
+        fallbacks = query_spec.retrieval_hints.fallback_hypotheses or []
         fb_idx = min(max(attempt - 2, 0), len(fallbacks) - 1)
         if 0 <= fb_idx < len(fallbacks):
             hypothesis = fallbacks[fb_idx]

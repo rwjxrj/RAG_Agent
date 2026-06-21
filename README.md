@@ -6,7 +6,7 @@
 
 ## 结论
 
-这是一个面向企业客服、工单和 livechat 场景的 RAG 支持助手。项目由 FastAPI 后端、React 管理台、PostgreSQL、Redis/Celery、OpenSearch、Qdrant 和 MinIO 组成，核心能力是把文档、网页、上传文件和 WHMCS 工单沉淀为知识库，再通过 Agentic Router、混合检索、证据评估、LLM 生成和审核器输出可引用、可追踪的客服建议回复。
+这是一个面向企业客服、工单和 livechat 场景的 RAG 支持助手。项目由 FastAPI 后端、React 管理台、PostgreSQL、Redis/Celery、OpenSearch、Qdrant 和 MinIO 组成，核心能力是把文档、网页、上传文件和 WHMCS 工单沉淀为知识库，再通过统一的 `PipelineRunner` 状态机执行意图路由、查询标准化、混合检索、证据评估、LLM 生成和审核，输出可引用、可追踪的客服建议回复。
 
 适合的使用方式：
 
@@ -17,6 +17,7 @@
 ## 目录
 
 - [系统架构](#系统架构)
+- [重构后的架构边界](#重构后的架构边界)
 - [核心流程](#核心流程)
 - [功能模块](#功能模块)
 - [技术栈](#技术栈)
@@ -63,6 +64,22 @@ flowchart TD
 
 `docker-compose --profile full up -d` 会额外启用 `nginx` 网关并监听 `80` 端口。
 
+## 重构后的架构边界
+
+当前工作区已完成查询链路的阶段性重构，核心边界如下：
+
+| 边界 | 当前职责 |
+|---|---|
+| `AnswerService` | 保持 API 调用兼容的薄门面，只负责把请求交给 `PipelineRunner.run()`。 |
+| `PipelineRunner` | 唯一编排与依赖所有者；统一执行 intent cache、Agentic Router、标准化、检索、评估、决策、生成和校验。`Orchestrator` 仅保留为兼容别名。 |
+| `OrchestratorContext` | 保存状态机上下文、类型化阶段结果、重试状态、审核结果、计时和调试信息，不再依赖运行时动态字段。 |
+| `QuerySpec` | 由 `QueryIntent`、`RetrievalHints`、`ClarificationNeeds`、`AnswerContract`、`QuerySlots` 五个子数据类组成。 |
+| Phase 输出 | `RetrievePhaseOutput`、`GeneratePhaseOutput`、`VerifyPhaseOutput` 和 `OrchestratorDebug` 明确阶段间数据契约。 |
+| `RetrievalService` | 负责并行 BM25/向量召回、校准、融合、rerank、候选池和 EvidenceSet；预算与文档类型策略由数据类承载。 |
+| `normalization.py` | answer mode、support level、answer type、product family、page kind、doc type 等标准化逻辑的单一来源。 |
+
+模型选择、阶段计时和终态输出均由 `PipelineRunner` 统一协调。RAG 阶段实现仍位于 `app/services/phases/`，便于独立测试和维护。
+
 ## 核心流程
 
 ### 查询流程
@@ -78,7 +95,7 @@ flowchart TD
   F -->|clarify| H["ASK_USER 追问"]
   F -->|human_handoff| I["ESCALATE 转人工"]
   F -->|rag_search 或回退| J["语言识别 + Normalizer -> QuerySpec"]
-  J --> K["Orchestrator phases"]
+  J --> K["PipelineRunner 状态机"]
   K --> L["RetrievalService"]
   L --> M["OpenSearch BM25"]
   L --> N["Qdrant Vector"]
@@ -101,13 +118,13 @@ flowchart TD
 ```mermaid
 flowchart TD
   A["source/*.json / source/*.sql"] --> B["scripts 或 /admin/ingest-from-source"]
-  C["URL / 整站抓取"] --> D["/documents/fetch-from-url / crawl-website"]
+  C["单 URL 抓取"] --> D["/documents/fetch-from-url"]
   E["上传文件"] --> F["/documents/upload"]
   G["WHMCS 工单抓取"] --> H["Ticket 表 + 人工审批"]
   H --> I["/admin/ingest-tickets-to-file"]
   I --> A
   B --> J["source_loaders"]
-  D --> K["url_fetcher / web_crawler"]
+  D --> K["url_fetcher"]
   F --> L["file_parser"]
   J --> M["IngestionService.ingest_document"]
   K --> M
@@ -124,7 +141,7 @@ flowchart TD
 - `IngestionService` 以 `Document.source_url` 和内容 checksum 做幂等判断。
 - 内容未变化且未 `force_reindex` 时，只更新 metadata，不重新分块、embedding 或索引。
 - 文档更新时会删除旧 chunk 的 OpenSearch/Qdrant 索引和 DB 记录，再写入新索引。
-- URL 抓取支持静态 HTML；显式开启 `render_js` 时使用 Playwright 渲染。
+- URL 抓取支持静态 HTML；显式开启 `render_js` 时使用 Playwright 渲染。当前已移除整站 crawler 服务和对应前端页面，仅保留单 URL 获取及已有 URL 文档的重新抓取。
 
 ## 功能模块
 
@@ -132,14 +149,15 @@ flowchart TD
 |---|---|
 | 会话管理 | 创建会话、同步/流式发送消息、保存引用和 debug metadata，可关联 ticket/livechat。 |
 | 建议回复 | `POST /v1/reply/generate` 提供无状态客服建议回复，适合集成外部系统。 |
-| 文档管理 | 文档 CRUD、URL 抓取、整站抓取、重新抓取、上传文件、同步 source JSON。 |
+| 文档管理 | 文档 CRUD、单 URL 抓取、单篇/全部 URL 文档重新抓取、上传文件、同步 source JSON。 |
 | 工单学习 | WHMCS cookie/账号登录抓取、SQL 转储导入、审批 pending/approved/rejected、导出已批准样本。 |
-| RAG 管线 | Agentic Router、QuerySpec、混合检索、EvidenceSet、证据质量门控、ReviewerGate、targeted retry。 |
-| 配置中心 | LLM、Embedding、架构开关、system prompt、branding、意图缓存、文档类型。 |
+| RAG 管线 | PipelineRunner 状态机、Agentic Router、组合式 QuerySpec、混合检索、EvidenceSet、证据质量门控、ReviewerGate、targeted retry。 |
+| 配置中心 | LLM、Embedding、Reranker、架构开关、system prompt、branding、意图缓存、文档类型。 |
+| 健康检查 | 快速检查 PostgreSQL/Redis；综合检查 LLM、Embedding、Reranker、PostgreSQL、Redis、Qdrant 和 OpenSearch。 |
 | 认证和集成 | JWT 登录、DB API Token (`sk_*`)、环境变量 API key、管理员 key。 |
-| 管理台 | 会话、文档、仪表盘、意图缓存、文档类型、设置、API Token、API Reference。 |
+| 管理台 | 会话、文档、仪表盘、意图缓存、文档类型、设置、健康检查、API Token、API Reference。 |
 
-前端当前导航入口包括：会话管理、文档管理、仪表盘、意图缓存、文档类型、设置、API Token、API 参考。路由中也保留了 tickets 和 crawler 页面入口。
+前端当前导航入口包括：会话管理、文档管理、仪表盘、意图缓存、文档类型、设置、健康检查、API Token、API 参考。tickets 详情路由仍保留，但 crawler 页面和路由已移除。
 
 ## 技术栈
 
@@ -245,16 +263,15 @@ Vite 本地开发默认访问 `http://localhost:5173`；Docker 前端访问 `htt
 
 `app/services/source_loaders.py` 支持 `pages`、`articles`、`plans`、`sales_kb`、`sample_conversations` 等格式。
 
-### URL、整站和上传
+### URL 和上传
 
 - 单 URL 抓取：`POST /v1/documents/fetch-from-url`
-- 整站抓取：`POST /v1/documents/crawl-website`
 - 上传文件：`POST /v1/documents/upload`
 - 重新抓取：`POST /v1/documents/{id}/re-crawl` 或 `POST /v1/documents/re-crawl-all`
 
 ### WHMCS 工单闭环
 
-1. 在 Crawler/Tickets 相关页面或 admin API 中配置 WHMCS base URL 和 cookie。
+1. 通过 admin API 配置 WHMCS base URL 和 cookie。
 2. 抓取工单写入 Ticket 表。
 3. 人工审批高质量工单为 `approved`。
 4. 调用 `POST /v1/admin/ingest-tickets-to-file` 导出到 `source/sample_conversations.json`。
@@ -286,7 +303,6 @@ make import-whmcs
 | Reply | `POST /v1/reply/generate` | 无状态建议回复，适合外部客服系统。 |
 | Documents | `GET/POST/PATCH/DELETE /v1/documents` | 文档管理。 |
 | Documents | `POST /v1/documents/fetch-from-url` | 从 URL 抓取文档。 |
-| Documents | `POST /v1/documents/crawl-website` | 抓取网站。 |
 | Documents | `POST /v1/documents/upload` | 上传文件并入库。 |
 | Tickets | `GET /v1/tickets` | 工单列表。 |
 | Tickets | `GET /v1/tickets/{id}` | 工单详情。 |
@@ -296,10 +312,12 @@ make import-whmcs
 | Admin | `PATCH /v1/admin/tickets/{id}/approval` | 更新工单审批状态。 |
 | Admin | `GET/PUT /v1/admin/config/llm` | LLM 配置。 |
 | Admin | `GET/PUT /v1/admin/config/embedding` | Embedding 配置。 |
+| Admin | `GET/PUT /v1/admin/config/reranker` | Reranker 配置。 |
 | Admin | `GET/PUT /v1/admin/config/archi` | RAG 架构开关。 |
 | Admin | `GET/POST/PUT/DELETE /v1/admin/intents` | 意图缓存管理。 |
 | Admin | `GET/POST/PUT/DELETE /v1/admin/doc-types` | 文档类型管理。 |
 | Health | `GET /v1/health` | 健康检查。 |
+| Health | `POST /v1/health/check` | 综合检查模型与核心基础设施连通性。 |
 | Metrics | `GET /v1/metrics` | Prometheus 指标。 |
 | Dashboard | `GET /v1/dashboard/stats` | 仪表盘统计。 |
 
@@ -360,9 +378,9 @@ API 支持三类认证：
 
 ## 配置说明
 
-### LLM 和 Embedding
+### LLM、Embedding 和 Reranker
 
-运行时优先读取数据库中的 Settings 配置；数据库为空时回退到 `.env`。
+运行时优先读取数据库中的 Settings 配置；数据库为空时回退到 `.env`。当前数据库配置覆盖 LLM、Embedding、Reranker 和架构开关。
 
 关键变量：
 
@@ -478,7 +496,7 @@ app/
   api/routes/             auth、conversations、reply、documents、tickets、admin、dashboard、health
   core/                   config、auth、gateway、logging、metrics、rate limit、tracing
   db/                     SQLAlchemy models、session
-  services/               RAG 编排、入库、检索、LLM、配置、工单同步、URL 抓取
+  services/               PipelineRunner 编排、入库、检索、LLM、配置、工单同步、URL 抓取
   services/phases/        retrieve、assess、decide、generate、verify 等 RAG 阶段
   search/                 OpenSearch、Qdrant、embedding、reranker
   crawlers/               WHMCS Playwright 爬虫
@@ -487,7 +505,7 @@ worker/
   tasks.py                异步入库任务
 frontend/
   src/App.tsx             前端路由和主导航
-  src/pages/              会话、文档、仪表盘、设置、Token、API 参考等页面
+  src/pages/              会话、文档、仪表盘、设置、健康检查、Token、API 参考等页面
 alembic/                  数据库迁移
 scripts/                  初始化、入库、WHMCS 导入和调试脚本
 source/                   运行时知识源文件目录
@@ -522,7 +540,8 @@ npm run build
 | API 返回 401 | 检查 Bearer JWT、`X-API-Key` 或 `X-Admin-API-Key` 是否正确。 |
 | 入库后检索不到内容 | 先运行 `make ingest-dry` 检查 source 格式，再看 api/worker 日志和 OpenSearch/Qdrant 状态。 |
 | 切换 embedding 模型后检索异常 | 确认 `EMBEDDING_DIMENSIONS` 与 Qdrant collection 维度一致，必要时重新建索引并重新入库。 |
-| WHMCS 抓取失败 | cookie 可能过期；重新登录 WHMCS，确认 base URL、list path 和 login path。 |
+| WHMCS 工单抓取失败 | cookie 可能过期；重新登录 WHMCS，确认 base URL、list path 和 login path。 |
+| 综合健康检查失败 | 在管理台健康检查页或 `POST /v1/health/check` 查看具体服务、延迟和脱敏错误；模型检查会产生少量真实请求。 |
 | LLM 无响应或模型错误 | 检查 Settings 中 LLM 配置、`.env` fallback、`OPENAI_BASE_URL` 和 provider 模型名。 |
 | 答案被追问或转人工 | 查看 `debug_metadata`、pipeline 日志、EvidenceSet 和 reviewer 结果，确认知识库证据是否足够。 |
 

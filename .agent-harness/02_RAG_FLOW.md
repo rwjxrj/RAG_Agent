@@ -1,7 +1,7 @@
 # 02_RAG_FLOW.md
 
 ## 结论
-RAG 分两条主线：入库线把 source、URL、上传文件、WHMCS 工单转为 Document/Chunk，并写入 PostgreSQL、OpenSearch、Qdrant；查询线从 conversations 或 reply 进入 `AnswerService.generate()`，先检查 intent cache，未命中后由轻量 `AgenticRouter` 判断是否直接回复、追问、转人工或进入 RAG。进入 RAG 时仍经 normalizer、`Orchestrator.run()`、`RetrievalService.retrieve()`、EvidenceSet、LLM、`ReviewerGate.review()` 输出答案和引用。
+RAG 分两条主线：入库线把 source、URL、上传文件、WHMCS 工单转为 Document/Chunk，并写入 PostgreSQL、OpenSearch、Qdrant；查询线从 conversations 或 reply 进入 `AnswerService.generate()` 薄包装，再由 `PipelineRunner.run()` 统一执行 intent cache、Agentic Router、normalizer、检索、生成和校验状态。进入 RAG 时仍经 `RetrievalService.retrieve()`、EvidenceSet、LLM、`ReviewerGate.review()` 输出答案和引用。
 
 ## 入库流程
 
@@ -116,7 +116,7 @@ flowchart TD
   AR -->|rag_search/低置信/异常| I["语言识别 + normalizer -> QuerySpec"]
   I --> J{"skip_retrieval?"}
   J -->|是| K["返回 canned response"]
-  J -->|否| L["Orchestrator"]
+  J -->|否| L["PipelineRunner"]
   L --> M["RETRIEVE: RetrievalService"]
   M --> N["OpenSearch BM25"]
   M --> O["Embedding + Qdrant"]
@@ -148,7 +148,7 @@ flowchart TD
 
 ### Agentic Router 接入点
 
-在 guardrails 通过且 intent cache 未命中后，`AnswerService.generate()` 会先执行轻量 Agentic Router。
+在 guardrails 通过后，`AnswerService.generate()` 将请求交给 `PipelineRunner.run()`；Runner 的 `INTENT_CACHE` 未命中后进入 `AGENTIC_ROUTE`。
 
 - `rag_search`：继续现有 `query extract -> retrieve -> assess evidence -> retry -> generate -> verify`。
 - `direct_response`：用于问候和能力说明，直接返回 `PASS`，不检索。
@@ -178,9 +178,9 @@ flowchart TD
   J --> K["normalizer.normalize() -> QuerySpec 可选"]
   K --> L{"QuerySpec.skip_retrieval?"}
   L -->|是| M["canned response"]
-  L -->|否| N["OrchestratorContext"]
-  N --> O["Orchestrator.run()"]
-  O --> P["AnswerService.execute(UNDERSTAND)"]
+  L -->|否| N["OrchestratorContext（类型化阶段字段）"]
+  N --> O["PipelineRunner 主循环"]
+  O --> P["PipelineRunner.execute() 直接调用 phase"]
   P --> Q["execute_retrieve()"]
   Q --> R["build_retrieval_plan_for_attempt()"]
   R --> S["RetrievalService.retrieve()"]
@@ -271,14 +271,14 @@ flowchart TD
 - `DOWNGRADE_LANE`：如有 `trimmed_answer`，替换答案并降级 lane 后进入 `DONE`。
 - `ESCALATE`：进入 `ESCALATE` 输出。
 - `ASK_USER`：如果 `targeted_retry_enabled`、仍可重试、未用过 verify targeted retry、`retry_reason` 属于 `type_mismatch` / `overclaim` / `unsupported_exact` 且有 `suggested_queries`，则设置 `retry_query_override` 并回到 `RETRY_RETRIEVE`；否则进入 `ASK_USER` 输出。
-- 任一 phase 抛异常时，`Orchestrator.run()` 捕获后通过 `build_output(ESCALATE)` 结束。
+- 任一 phase 抛异常时，`PipelineRunner` 捕获后通过 `build_output(ESCALATE)` 结束。
 
 ## 关键组件
-- `AnswerService`：RAG 总编排入口。
+- `AnswerService`：稳定 API 薄包装，仅委托 `PipelineRunner.run()`。
 - `match_intent`：意图缓存命中时跳过检索和 LLM。
 - `AgenticRouter`：intent cache 未命中后、固定 RAG 流程前的轻量工具选择器；支持 `rag_search`、`direct_response`、`clarify`、`human_handoff`，低置信或异常默认回退 `rag_search`。
 - `normalize_query`：生成 QuerySpec，包含 canonical query、required evidence、retrieval profile 等。
-- `Orchestrator`：按 UNDERSTAND、RETRIEVE、ASSESS_EVIDENCE、DECIDE、GENERATE、VERIFY 阶段推进。
+- `PipelineRunner`：唯一编排与依赖所有者，按 INTENT_CACHE、AGENTIC_ROUTE、NORMALIZE、SKIP_RETRIEVAL、RETRIEVE、ASSESS_EVIDENCE、DECIDE、GENERATE、VERIFY 阶段推进。
 - `RetrievalService`：执行 BM25 + 向量检索、RRF/simple 融合、rerank、EvidenceSet 构建。
 - `LLMGateway`：调用 OpenAI-compatible chat completions。
 - `ReviewerGate`：生成后校验和风险拦截。

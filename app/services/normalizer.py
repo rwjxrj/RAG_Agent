@@ -23,6 +23,11 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.conversation_context import truncate_for_prompt
 from app.services.llm_gateway import get_llm_gateway
+from app.services.normalization import (
+    normalize_answer_mode as _sanitize_answer_mode,
+    normalize_answer_type as _sanitize_answer_type,
+    normalize_support_level as _sanitize_support_level,
+)
 from app.services.retrieval_planner import (
     derive_hard_requirements,
     infer_retrieval_profile,
@@ -51,25 +56,6 @@ _ALLOWED_ANSWER_SHAPES = {
     "comparison",
     "procedural",
     "bounded_summary",
-}
-_ALLOWED_ANSWER_TYPES = {
-    "direct_link",
-    "pricing",
-    "policy",
-    "troubleshooting",
-    "general",
-    "clarification",
-    "account",
-}
-_ANSWER_TYPE_ALIASES = {
-    "link": "direct_link",
-    "order_link": "direct_link",
-    "buy_link": "direct_link",
-    "price": "pricing",
-    "price_lookup": "pricing",
-    "general_info": "general",
-    "ask_user": "clarification",
-    "ambiguous": "clarification",
 }
 _EXACT_ANSWER_TYPES = {"direct_link", "pricing", "policy"}
 _DEFAULT_ACCEPTABLE_RELATED_TYPES = {
@@ -361,38 +347,11 @@ def _sanitize_answer_shape(v: Any) -> str:
     return shape if shape in _ALLOWED_ANSWER_SHAPES else "direct_lookup"
 
 
-def _sanitize_answer_type(v: Any) -> str:
-    raw = _as_str(v, "").lower()
-    normalized = _ANSWER_TYPE_ALIASES.get(raw, raw)
-    if normalized in _ALLOWED_ANSWER_TYPES:
-        return normalized
-    return "general"
-
-
 def _sanitize_answer_expectation(v: Any) -> str:
     value = _as_str(v, "").lower()
     if value in {"exact", "best_effort", "clarify_first"}:
         return value
     return "best_effort"
-
-
-def _sanitize_answer_mode(v: Any) -> str:
-    value = _as_str(v, "").upper()
-    if value in {"PASS_EXACT", "PASS_PARTIAL", "ASK_USER"}:
-        return value
-    aliases = {
-        "EXACT": "PASS_EXACT",
-        "PARTIAL": "PASS_PARTIAL",
-        "CLARIFY": "ASK_USER",
-    }
-    return aliases.get(value, "PASS_EXACT")
-
-
-def _sanitize_support_level(v: Any) -> str:
-    value = _as_str(v, "").lower()
-    if value in {"strong", "partial", "weak"}:
-        return value
-    return "strong"
 
 
 def _sanitize_doc_type_prior(v: Any) -> list[str]:

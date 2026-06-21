@@ -1,7 +1,26 @@
 # AGENTS.md
 
 ## 结论
-这是一个企业客服 RAG 系统。Codex 在本项目中应优先做项目理解、流程梳理和小步可回退修改；默认不要大规模重构、不要复制 Claude Code hooks、不要安装依赖、不要修改业务代码以外的文件。Harness Starter 在本项目中适配为“Codex 可执行的文档化 harness”，而不是 Claude Hook 自动化。
+这是一个企业客服 RAG 系统。Codex 在本项目中应优先做项目理解、流程梳理和小步可回退修改；默认不要大规模重构、不要复制 Claude Code hooks、不要安装依赖、不要修改业务代码以外的文件。Harness Starter 在本项目中适配为”Codex 可执行的文档化 harness”，而不是 Claude Hook 自动化。
+
+## 架构状态（2026-06-20）
+
+已完成的架构改进：
+
+| 改进项 | 改动 | 状态 |
+|---|---|---|
+| 标准化模块 | `app/services/normalization.py` 单一来源，消除 8 个函数的跨模块重复 | ✅ |
+| QuerySpec 拆分 | 46 字段拆分为 5 个子数据类（QueryIntent、RetrievalHints、ClarificationNeeds、AnswerContract、QuerySlots） | ✅ |
+| Retrieval 拆分 | `retrieve()` 486 行拆分为 7 个辅助方法 + BudgetConfig/DocTypeStrategy 数据类 | ✅ |
+| 类型化 Phase 输出 | 新增 RetrievePhaseOutput、GeneratePhaseOutput、VerifyPhaseOutput、OrchestratorDebug | ✅ |
+| 运行时注入消除 | `_last_reviewer_result` 移入 OrchContext 正式字段 | ✅ |
+| 计时统一 | Orchestrator 成为唯一计时来源 | ✅ |
+| 模型路由统一 | 所有模型路由通过 Orchestrator | ✅ |
+
+待执行（阶段 2，PRD 在 `.scratch/orchestrator-refactor/PRD-phase2.md`）：
+- 任务 5：依赖注入移入 Orchestrator
+- 任务 6：预处理逻辑纳入状态机
+- 任务 7：合并为 PipelineRunner
 
 ## Codex 适配原则
 - 本项目主要使用 Codex，不以 Claude Code 为运行前提。
@@ -62,6 +81,10 @@
 
 ## 重点模块
 - RAG 问答流程：`reply` / `conversations` / `answer_service` / `orchestrator` / `phases` / `retrieval` / `llm_gateway` / `search`
+- 标准化：`app/services/normalization.py`（answer_mode、support_level、answer_type、product_family、page_kind、doc_type、to_str_list）
+- QuerySpec 子数据类：`app/services/schemas.py`（QueryIntent、RetrievalHints、ClarificationNeeds、AnswerContract、QuerySlots）
+- Phase 输出：`app/services/schemas.py`（RetrievePhaseOutput、GeneratePhaseOutput、VerifyPhaseOutput、OrchestratorDebug）
+- 检索：`app/services/retrieval.py`（BudgetConfig、DocTypeStrategy、7 个辅助方法）
 - 知识库入库：`documents` / `admin` / `ingestion` / `source_loaders` / `source_sync` / `scripts/ingest_from_source.py`
 - 工单学习流程：`tickets` / WHMCS crawler / approval / `ingest_tickets_to_file` / `scripts/ingest_tickets_from_source.py`
 - 前端页面：Login、Conversations、Documents、Crawl、Dashboard、Settings、Tickets、Intents、Doc Types、API Tokens、API Reference
@@ -96,7 +119,21 @@
 - 修改脚本、测试、运行命令时，同步检查 `.agent-harness/03_DEV_COMMANDS.md`。
 - 修改工作规范、安全边界时，同步检查 `AGENTS.md` 和 `.agent-harness/04_CHANGE_GUIDE.md`。
 - 遇到可复现故障或踩坑时，同步记录 `.agent-harness/07_FAILURE_MEMORY.md`。
-- 无需同步时，在最终回复中说明“harness 无需更新”的原因。
+- 无需同步时，在最终回复中说明”harness 无需更新”的原因。
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. One `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
 ## 验证要求
 - 文档-only 修改：检查 Markdown 文件是否存在、内容是否符合中文和路径要求即可。

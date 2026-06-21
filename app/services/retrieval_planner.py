@@ -14,6 +14,13 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.config import get_settings
 from app.services.doc_type_service import get_valid_doc_type_keys
+from app.services.normalization import (
+    normalize_answer_type as _sanitize_answer_type,
+    normalize_product_family as _normalize_product_family,
+    sanitize_doc_type_list as _sanitize_doc_type_list,
+    to_str_list as _to_str_list,
+    valid_doc_types as _valid_doc_types,
+)
 from app.services.schemas import HypothesisSpec, QuerySpec, RetrievalPlan
 
 if TYPE_CHECKING:
@@ -41,7 +48,6 @@ _EVIDENCE_FAMILY_PROFILE_MAP = {
     "capability_availability": "generic_profile",
     "general_info": "generic_profile",
 }
-_PRODUCT_FAMILIES = {"windows_vps", "kvm_vps", "macos_vps", "dedicated"}
 _ANSWER_TYPE_PAGE_KIND_HINTS: dict[str, dict[str, Any]] = {
     "direct_link": {
         "preferred_page_kinds": ["order_page", "product_page"],
@@ -106,52 +112,11 @@ def sanitize_retrieval_profile(value: Any) -> str | None:
     return None
 
 
-def _sanitize_answer_type(value: Any) -> str:
-    raw = str(value or "").strip().lower()
-    aliases = {
-        "link": "direct_link",
-        "order_link": "direct_link",
-        "price_lookup": "pricing",
-        "refund_policy": "policy",
-    }
-    normalized = aliases.get(raw, raw)
-    return normalized or "general"
-
-
-def _normalize_product_family(value: Any) -> str | None:
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return None
-    aliases = {
-        "windows": "windows_vps",
-        "windows vps": "windows_vps",
-        "windows_vps": "windows_vps",
-        "windows-rdp": "windows_vps",
-        "rdp": "windows_vps",
-        "kvm": "kvm_vps",
-        "kvm vps": "kvm_vps",
-        "kvm_vps": "kvm_vps",
-        "linux_vps": "kvm_vps",
-        "linux vps": "kvm_vps",
-        "linux": "kvm_vps",
-        "macos": "macos_vps",
-        "mac": "macos_vps",
-        "macos vps": "macos_vps",
-        "macos_vps": "macos_vps",
-        "dedicated": "dedicated",
-        "dedicated_server": "dedicated",
-        "dedicated server": "dedicated",
-        "dedicated_servers": "dedicated",
-    }
-    normalized = aliases.get(raw, raw)
-    return normalized if normalized in _PRODUCT_FAMILIES else None
-
-
 def _derive_product_family_hints(query_spec: QuerySpec | None) -> list[str]:
     if not query_spec:
         return []
     hints: list[str] = []
-    resolved_slots = getattr(query_spec, "resolved_slots", None) or {}
+    resolved_slots = query_spec.query_slots.resolved_slots or {}
     product_type = str(resolved_slots.get("product_type", "") or "").strip().lower()
     os_name = str(resolved_slots.get("os", "") or "").strip().lower()
     if product_type == "vps" and os_name == "windows":
@@ -163,9 +128,9 @@ def _derive_product_family_hints(query_spec: QuerySpec | None) -> list[str]:
     elif product_type in {"dedicated", "dedicated_server", "dedicated_servers"}:
         hints.append("dedicated")
     for candidate in (
-        getattr(query_spec, "target_entity", None),
+        query_spec.query_intent.target_entity,
         resolved_slots.get("product_type") if resolved_slots else None,
-        *list(getattr(query_spec, "entities", None) or []),
+        *list(query_spec.query_intent.entities or []),
     ):
         normalized = _normalize_product_family(candidate)
         if normalized and normalized not in hints:
@@ -175,23 +140,6 @@ def _derive_product_family_hints(query_spec: QuerySpec | None) -> list[str]:
 
 def _derive_answer_type_hints(answer_type: str) -> dict[str, Any]:
     return dict(_ANSWER_TYPE_PAGE_KIND_HINTS.get(_sanitize_answer_type(answer_type), _ANSWER_TYPE_PAGE_KIND_HINTS["general"]))
-
-
-def _valid_doc_types() -> set[str]:
-    valid = {str(x).strip().lower() for x in get_valid_doc_type_keys() if str(x).strip()}
-    if not valid:
-        valid = {"pricing", "policy", "tos", "faq", "howto", "docs", "conversation", "blog"}
-    return valid
-
-
-def _sanitize_doc_type_list(values: list[Any] | None) -> list[str]:
-    valid = _valid_doc_types()
-    out: list[str] = []
-    for item in values or []:
-        text = str(item).strip().lower()
-        if text and text in valid and text not in out:
-            out.append(text)
-    return out
 
 
 def derive_hard_requirements(
@@ -248,10 +196,10 @@ def collect_rewrite_candidates(
 ) -> list[str]:
     """Collect deduplicated rewrite candidates from QuerySpec."""
     candidates = [base_query.strip()]
-    if query_spec and getattr(query_spec, "rewrite_candidates", None):
+    if query_spec and query_spec.retrieval_hints.rewrite_candidates:
         candidates.extend(
             str(candidate).strip()
-            for candidate in (query_spec.rewrite_candidates or [])
+            for candidate in (query_spec.retrieval_hints.rewrite_candidates or [])
             if isinstance(candidate, str) and candidate.strip()
         )
 
@@ -300,7 +248,7 @@ def resolve_retrieval_query(
 def _resolve_profile(query_spec: QuerySpec | None, fallback_profile: str | None = None) -> str:
     """Resolve retrieval profile from authoritative QuerySpec when present."""
     if query_spec is not None:
-        profile = str(getattr(query_spec, "retrieval_profile", "")).strip()
+        profile = query_spec.retrieval_hints.retrieval_profile.strip()
         return profile or "generic_profile"
     if fallback_profile:
         profile = str(fallback_profile).strip()
@@ -313,14 +261,14 @@ def _resolve_hard_requirements(query_spec: QuerySpec | None) -> list[str]:
     """QuerySpec is authoritative for hard requirements."""
     if not query_spec:
         return []
-    return _normalize_str_list(getattr(query_spec, "hard_requirements", None) or [])
+    return _normalize_str_list(query_spec.retrieval_hints.hard_requirements or [])
 
 
 def _resolve_doc_type_prior(query_spec: QuerySpec | None) -> list[str]:
     """Resolve doc-type hints from QuerySpec (soft preference only)."""
     if not query_spec:
         return []
-    return _sanitize_doc_type_list(getattr(query_spec, "doc_type_prior", None) or [])
+    return _sanitize_doc_type_list(query_spec.retrieval_hints.doc_type_prior or [])
 
 
 def _resolve_active_hypothesis(
@@ -330,9 +278,9 @@ def _resolve_active_hypothesis(
     if not query_spec:
         return None
     hypotheses: list[HypothesisSpec] = []
-    if getattr(query_spec, "primary_hypothesis", None):
-        hypotheses.append(query_spec.primary_hypothesis)
-    hypotheses.extend(list(getattr(query_spec, "fallback_hypotheses", None) or []))
+    if query_spec.retrieval_hints.primary_hypothesis:
+        hypotheses.append(query_spec.retrieval_hints.primary_hypothesis)
+    hypotheses.extend(list(query_spec.retrieval_hints.fallback_hypotheses or []))
     if not hypotheses:
         return None
     if retry_strategy and getattr(retry_strategy, "hypothesis_index", None) is not None:
@@ -358,7 +306,7 @@ def _derive_preferred_sources(
         sources.extend(_normalize_str_list(retry_strategy.preferred_sources_override))
     if active_hypothesis and getattr(active_hypothesis, "preferred_sources", None):
         sources.extend(_normalize_str_list(active_hypothesis.preferred_sources))
-    if query_spec and getattr(query_spec, "doc_type_prior", None):
+    if query_spec and query_spec.retrieval_hints.doc_type_prior:
         doc_types = {d.lower() for d in _resolve_doc_type_prior(query_spec)}
         if "conversation" in doc_types:
             sources.append("conversation")
@@ -398,16 +346,16 @@ def _resolve_queries_from_query_spec(
     retry_strategy: RetryStrategy | None,
 ) -> tuple[str, str, list[str]]:
     keyword = (
-        query_spec.keyword_queries[0]
-        if query_spec.keyword_queries
+        query_spec.retrieval_hints.keyword_queries[0]
+        if query_spec.retrieval_hints.keyword_queries
         else selected_query
     )
     semantic = (
-        query_spec.semantic_queries[0]
-        if query_spec.semantic_queries
+        query_spec.retrieval_hints.semantic_queries[0]
+        if query_spec.retrieval_hints.semantic_queries
         else selected_query
     )
-    fallbacks = list((query_spec.rewrite_candidates or [])[1:5])
+    fallbacks = list((query_spec.retrieval_hints.rewrite_candidates or [])[1:5])
 
     if query_source != "base_query":
         keyword = selected_query
@@ -716,17 +664,17 @@ def build_retrieval_plan(
         fallback_queries = rewrite_candidates[1:5]
 
     answer_type = _sanitize_answer_type(
-        getattr(query_spec, "answer_type", None)
+        query_spec.answer_contract.answer_type
         if query_spec
         else ("pricing" if profile == "pricing_profile" else "general")
     )
     active_req = _normalize_str_list(
         getattr(active_hypothesis, "required_evidence", None) if active_hypothesis
-        else (getattr(query_spec, "required_evidence", None) if query_spec else [])
-    ) or _normalize_str_list(getattr(query_spec, "required_evidence", None) if query_spec else [])
+        else (query_spec.retrieval_hints.required_evidence if query_spec else [])
+    ) or _normalize_str_list(query_spec.retrieval_hints.required_evidence if query_spec else [])
     active_families = _normalize_str_list(
         getattr(active_hypothesis, "evidence_families", None) if active_hypothesis
-        else (getattr(query_spec, "evidence_families", None) if query_spec else [])
+        else (query_spec.retrieval_hints.evidence_families if query_spec else [])
     )
     preferred_doc_types, excluded_doc_types = _derive_doc_types(
         profile=profile,
@@ -826,17 +774,17 @@ async def build_retrieval_plan_for_attempt(
         else None
     ) or _resolve_profile(query_spec, fallback_profile=fallback_profile)
     answer_type = _sanitize_answer_type(
-        getattr(query_spec, "answer_type", None)
+        query_spec.answer_contract.answer_type
         if query_spec
         else ("pricing" if profile == "pricing_profile" else "general")
     )
     active_req = _normalize_str_list(
         getattr(active_hypothesis, "required_evidence", None) if active_hypothesis
-        else (getattr(query_spec, "required_evidence", None) if query_spec else [])
-    ) or _normalize_str_list(getattr(query_spec, "required_evidence", None) if query_spec else [])
+        else (query_spec.retrieval_hints.required_evidence if query_spec else [])
+    ) or _normalize_str_list(query_spec.retrieval_hints.required_evidence if query_spec else [])
     active_families = _normalize_str_list(
         getattr(active_hypothesis, "evidence_families", None) if active_hypothesis
-        else (getattr(query_spec, "evidence_families", None) if query_spec else [])
+        else (query_spec.retrieval_hints.evidence_families if query_spec else [])
     )
     preferred_doc_types, excluded_doc_types = _derive_doc_types(
         profile=profile,

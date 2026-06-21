@@ -12,6 +12,7 @@ from app.services.answer_utils import (
 )
 from app.services.agentic_router import AgenticRoute, AgenticRouterDecision
 from app.services.answer_service import AnswerService
+from app.services.orchestrator import PipelineRunner, OrchestratorAction
 from app.services.evidence_quality import QualityReport
 from app.services.retry_planner import RetryStrategy
 from app.services.schemas import AnswerOutput, DecisionResult, QuerySpec
@@ -27,16 +28,43 @@ class FakeRouter:
         return self.decision
 
 
-class FakeOrchestrator:
+class FakeOrchestrator(PipelineRunner):
     def __init__(self, output: AnswerOutput | None = None):
         self.output = output
         self.calls = []
 
-    async def run(self, ctx, handlers):
+    def configure(self, router):
+        from app.services import answer_service as answer_service_module
+
+        super().__init__(
+            retrieval=object(),
+            llm=object(),
+            reviewer=object(),
+            agentic_router=router,
+            intent_matcher=answer_service_module.match_intent,
+            normalizer=answer_service_module.normalize_query,
+            language_detector=answer_service_module.detect_language,
+        )
+
+    async def _run_context(self, ctx):
         self.calls.append(ctx)
+        for action in (
+            OrchestratorAction.INTENT_CACHE,
+            OrchestratorAction.AGENTIC_ROUTE,
+            OrchestratorAction.NORMALIZE,
+        ):
+            result = await self.execute(ctx, action)
+            self._apply_result(ctx, action, result)
+            if ctx.early_output is not None:
+                return ctx.early_output
+        if ctx.skip_retrieval:
+            result = await self.execute(ctx, OrchestratorAction.SKIP_RETRIEVAL)
+            self._apply_result(ctx, OrchestratorAction.SKIP_RETRIEVAL, result)
+            return ctx.early_output
         if self.output is not None:
+            self.output.debug["agentic_router"] = ctx.agentic_debug
             return self.output
-        return AnswerOutput(
+        output = AnswerOutput(
             decision="PASS",
             answer="RAG answered.",
             followup_questions=[],
@@ -44,14 +72,18 @@ class FakeOrchestrator:
             confidence=0.7,
             debug={},
         )
+        output.debug["agentic_router"] = ctx.agentic_debug
+        return output
 
 
 def make_answer_service(*, router, orchestrator: FakeOrchestrator | None = None) -> AnswerService:
+    resolved_orchestrator = orchestrator or FakeOrchestrator()
+    resolved_orchestrator.configure(router)
     return AnswerService(
         retrieval=object(),
         llm=object(),
         reviewer=object(),
-        orchestrator=orchestrator or FakeOrchestrator(),
+        runner=resolved_orchestrator,
         agentic_router=router,
     )
 
@@ -69,8 +101,8 @@ async def test_intent_cache_hit_skips_agentic_router(monkeypatch):
         confidence=0.86,
     )
     router = FakeRouter(decision)
-    service = make_answer_service(router=router)
     monkeypatch.setattr("app.services.answer_service.match_intent", lambda query: MatchedIntent())
+    service = make_answer_service(router=router)
 
     output = await service.generate("你好", trace_id="trace-intent")
 
@@ -97,8 +129,8 @@ async def test_intent_cache_hit_includes_trace(monkeypatch):
         confidence=0.86,
     )
     router = FakeRouter(decision)
-    service = make_answer_service(router=router)
     monkeypatch.setattr("app.services.answer_service.match_intent", lambda query: MatchedIntent())
+    service = make_answer_service(router=router)
 
     output = await service.generate("你好", trace_id="trace-intent")
 
@@ -131,7 +163,7 @@ async def test_direct_response_returns_pass_without_rag(monkeypatch):
     assert output.debug["trace_id"] == "trace-router"
     assert output.debug["agentic_router"]["route"] == "direct_response"
     assert router.calls[0].source == "reply"
-    assert orchestrator.calls == []
+    assert len(orchestrator.calls) == 1
 
 
 @pytest.mark.asyncio

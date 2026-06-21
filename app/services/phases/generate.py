@@ -17,7 +17,8 @@ from app.services.archi_config import get_self_critic_enabled
 from app.services.branding_config import get_system_prompt
 from app.services.conversation_context import truncate_for_prompt
 from app.services.flow_debug import _pipeline_log
-from app.services.orchestrator import OrchestratorContext, PhaseResult
+from app.services.orchestrator import OrchestratorContext
+from app.services.schemas import GenerateResult
 from app.services.phases.relevance_check import execute_relevance_check
 from app.services.self_critic import critique as self_critic
 
@@ -148,18 +149,19 @@ async def _run_reasoning_prepass(
         ctx.evidence[:max_chunks],
         max(240, int(getattr(settings, "llm_max_evidence_chars", 1200) // 2)),
     )
+    ro = ctx.retrieve_output
     reasoning_context = {
         "answer_shape": (
-            ctx.extra.get("active_answer_shape")
-            or (getattr(ctx.query_spec, "answer_shape", "direct_lookup") if ctx.query_spec else "direct_lookup")
+            ro.active_answer_shape
+            or (ctx.query_spec.answer_contract.answer_shape if ctx.query_spec else "direct_lookup")
         ),
         "evidence_families": (
-            list(ctx.extra.get("active_evidence_families") or [])
-            or list(getattr(ctx.query_spec, "evidence_families", None) or [])
+            list(ro.active_evidence_families or [])
+            or (list(ctx.query_spec.retrieval_hints.evidence_families or []) if ctx.query_spec else [])
         ),
         "required_evidence": (
-            list(ctx.extra.get("active_required_evidence") or [])
-            or list(getattr(ctx.query_spec, "required_evidence", None) or [])
+            list(ro.active_required_evidence or [])
+            or (list(ctx.query_spec.retrieval_hints.required_evidence or []) if ctx.query_spec else [])
         ),
         "max_options": max_options,
     }
@@ -191,7 +193,7 @@ async def _run_reasoning_prepass(
         return None
 
 
-async def _apply_relevance_check(ctx: OrchestratorContext, *, llm) -> None:
+async def _apply_relevance_check(ctx: OrchestratorContext, *, llm, orchestrator) -> None:
     """Run relevance check and filter conversation_history if not relevant."""
     if not ctx.conversation_history:
         return
@@ -199,11 +201,12 @@ async def _apply_relevance_check(ctx: OrchestratorContext, *, llm) -> None:
         ctx.effective_query or ctx.query,
         ctx.conversation_history,
         llm=llm,
+        orchestrator=orchestrator,
         trace_id=ctx.trace_id,
     )
     if result is None:
         return  # Fallback: keep full history
-    ctx.extra["conversation_relevance"] = {
+    ctx.generate_output.conversation_relevance = {
         "relevant": result.relevant,
         "reason": result.reason,
         "relevant_turn_count": result.relevant_turn_count,
@@ -227,12 +230,12 @@ async def execute_generate(
     llm,
     orchestrator,
     settings,
-) -> PhaseResult:
+) -> GenerateResult:
     """Generate an answer from evidence selected by retrieval/evidence selector."""
-    await _apply_relevance_check(ctx, llm=llm)
+    await _apply_relevance_check(ctx, llm=llm, orchestrator=orchestrator)
 
     evidence = list(ctx.evidence or [])
-    relevance = ctx.extra.get("conversation_relevance") or {}
+    relevance = ctx.generate_output.conversation_relevance or {}
     if (
         getattr(get_settings(), "prior_citations_injection_enabled", True)
         and relevance.get("relevant") is True
@@ -265,7 +268,7 @@ async def execute_generate(
         settings=settings,
     )
     if reasoning_prewrite:
-        ctx.extra["reasoning_prewrite"] = reasoning_prewrite
+        ctx.generate_output.reasoning_prewrite = reasoning_prewrite
     user_content = f"User question: {ctx.effective_query}\n\nEvidence:\n{evidence_block}"
     if reasoning_prewrite:
         user_content += (
@@ -282,7 +285,7 @@ async def execute_generate(
         for msg in truncate_for_prompt(ctx.conversation_history):
             messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": user_content})
-    ctx.extra["messages"] = messages
+    ctx.generate_output.messages = messages
 
     _pipeline_log("generate", "start", model=model, evidence_chunks=len(ctx.evidence), trace_id=ctx.trace_id)
     try:
@@ -296,10 +299,10 @@ async def execute_generate(
         )
     except Exception as e:
         logger.error("answer_llm_failed", error=str(e))
-        ctx.extra["error"] = str(e)
+        ctx.generate_output.error = str(e)
         raise
 
-    ctx.extra["llm_resp"] = llm_resp
+    ctx.generate_output.llm_resp = llm_resp
     if getattr(llm_resp, "finish_reason", None) == "length":
         logger.warning("llm_response_truncated", trace_id=ctx.trace_id)
 
@@ -316,18 +319,18 @@ async def execute_generate(
         if get_self_critic_enabled() and gen_attempt < max_gen_attempts:
             critic_context = {
                 "answer_shape": (
-                    ctx.extra.get("active_answer_shape")
-                    or (getattr(ctx.query_spec, "answer_shape", "direct_lookup") if ctx.query_spec else "direct_lookup")
+                    ro.active_answer_shape
+                    or (ctx.query_spec.answer_contract.answer_shape if ctx.query_spec else "direct_lookup")
                 ),
                 "evidence_families": (
-                    list(ctx.extra.get("active_evidence_families") or [])
-                    or list(getattr(ctx.query_spec, "evidence_families", None) or [])
+                    list(ro.active_evidence_families or [])
+                    or list(ctx.query_spec.retrieval_hints.evidence_families or []) if ctx.query_spec else []
                 ),
                 "required_evidence": (
-                    list(ctx.extra.get("active_required_evidence") or [])
-                    or list(getattr(ctx.query_spec, "required_evidence", None) or [])
+                    list(ro.active_required_evidence or [])
+                    or list(ctx.query_spec.retrieval_hints.required_evidence or []) if ctx.query_spec else []
                 ),
-                "reasoning_prewrite": ctx.extra.get("reasoning_prewrite"),
+                "reasoning_prewrite": ctx.generate_output.reasoning_prewrite,
             }
             critique_result = await self_critic(
                 ctx.effective_query,
@@ -365,9 +368,9 @@ async def execute_generate(
                 except Exception as err:
                     logger.warning("self_critic_regenerate_failed", error=str(err))
                 self_critic_regenerated = True
-                ctx.extra["llm_resp"] = llm_resp
+                ctx.generate_output.llm_resp = llm_resp
         break
-    ctx.extra["self_critic_regenerated"] = self_critic_regenerated
+    ctx.generate_output.self_critic_regenerated = self_critic_regenerated
     candidate_payload = parsed.get("candidate", {}) if isinstance(parsed.get("candidate"), dict) else {}
     candidate_payload = dict(candidate_payload)
     candidate_payload["answer_text"] = answer
@@ -380,7 +383,7 @@ async def execute_generate(
         if target_mode not in {"PASS_EXACT", "PASS_PARTIAL", "ASK_USER"}:
             target_mode = "ASK_USER" if decision == "ASK_USER" else "PASS_EXACT"
         candidate_payload["answer_mode"] = target_mode
-    ctx.extra["answer_candidate"] = candidate_payload
+    ctx.generate_output.answer_candidate = candidate_payload
 
     _pipeline_log(
         "generate",
@@ -389,9 +392,9 @@ async def execute_generate(
         self_critic_regenerated=self_critic_regenerated,
         trace_id=ctx.trace_id,
     )
-    ctx.extra["generated_decision"] = decision
+    ctx.generate_output.generated_decision = decision
 
-    return PhaseResult(
+    return GenerateResult(
         answer=answer,
         citations=citations,
         followup=followup,

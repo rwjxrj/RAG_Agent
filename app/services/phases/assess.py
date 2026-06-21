@@ -2,26 +2,28 @@
 
 from app.services.evidence_quality import evaluate_quality, passes_quality_gate
 from app.services.flow_debug import _pipeline_log
-from app.services.orchestrator import OrchestratorContext, PhaseResult
+from app.services.orchestrator import OrchestratorContext
+from app.services.schemas import AssessResult
 
 
-async def execute_assess_evidence(ctx: OrchestratorContext) -> PhaseResult:
+async def execute_assess_evidence(ctx: OrchestratorContext) -> AssessResult:
     """Run quality gate on retrieved evidence. LLM evaluates; no rule-based logic."""
-    required_evidence = ctx.extra.get("active_required_evidence") or ctx.extra.get("required_evidence", [])
-    hard_requirements = ctx.extra.get("active_hard_requirements") or ctx.extra.get("hard_requirements", [])
+    ro = ctx.retrieve_output
+    required_evidence = ro.active_required_evidence
+    hard_requirements = ro.active_hard_requirements
     product_type = ""
-    if ctx.query_spec and getattr(ctx.query_spec, "resolved_slots", None):
-        product_type = str((ctx.query_spec.resolved_slots or {}).get("product_type", "")).strip()
+    if ctx.query_spec and ctx.query_spec.query_slots.resolved_slots:
+        product_type = str((ctx.query_spec.query_slots.resolved_slots or {}).get("product_type", "")).strip()
     quality_context = {
         "answer_shape": (
-            ctx.extra.get("active_answer_shape")
-            or (getattr(ctx.query_spec, "answer_shape", "direct_lookup") if ctx.query_spec else "direct_lookup")
+            ro.active_answer_shape
+            or (ctx.query_spec.answer_contract.answer_shape if ctx.query_spec else "direct_lookup")
         ),
         "evidence_families": (
-            list(ctx.extra.get("active_evidence_families") or [])
-            or list(getattr(ctx.query_spec, "evidence_families", None) or [])
+            list(ro.active_evidence_families or [])
+            or (list(ctx.query_spec.retrieval_hints.evidence_families or []) if ctx.query_spec else [])
         ),
-        "active_hypothesis_name": ctx.extra.get("active_hypothesis_name"),
+        "active_hypothesis_name": ro.active_hypothesis_name,
         "retrieval_profile": getattr(ctx.retrieval_plan, "profile", None),
         "evidence_set_uncovered_requirements": (
             list(getattr(ctx.evidence_set, "uncovered_requirements", None) or [])
@@ -62,16 +64,16 @@ async def execute_assess_evidence(ctx: OrchestratorContext) -> PhaseResult:
         actionability_score=quality_report.actionability_score,
         missing_signals=quality_report.missing_signals,
         hard_requirement_coverage=quality_report.hard_requirement_coverage,
-        active_hypothesis=ctx.extra.get("active_hypothesis_name"),
+        active_hypothesis=ro.active_hypothesis_name,
         trace_id=ctx.trace_id,
     )
-    history = list(ctx.extra.get("hypothesis_history", []))
+    history = list(ro.hypothesis_history)
     if history:
         history[-1]["quality_score"] = quality_report.quality_score
         history[-1]["gate_pass"] = gate_passed
         history[-1]["reason"] = quality_report.reason
-        ctx.extra["hypothesis_history"] = history
-    return PhaseResult(
+        ro.hypothesis_history = history
+    return AssessResult(
         quality_report=quality_report,
         passes_quality_gate=gate_passed,
     )

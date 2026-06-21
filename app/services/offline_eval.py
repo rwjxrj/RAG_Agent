@@ -13,6 +13,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app.core.logging import get_logger
+from app.services.normalization import to_str_list as _to_str_list
 from app.core.metrics import (
     offline_eval_answer_correctness,
     offline_eval_cases_total,
@@ -160,17 +161,6 @@ def _bool_rate(values: list[Any]) -> float | None:
     if not flags:
         return None
     return sum(1 for v in flags if v) / len(flags)
-
-
-def _to_str_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        out = [str(v).strip() for v in value if str(v).strip()]
-    else:
-        text = str(value).strip()
-        out = [text] if text else []
-    return list(dict.fromkeys(out))
 
 
 def _to_history(value: Any) -> list[dict[str, str]]:

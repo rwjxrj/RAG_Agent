@@ -25,6 +25,10 @@ if "app.core.tracing" not in sys.modules:
     tracing_module.setup_tracing = lambda app=None: None
     tracing_module.llm_usage_var = ContextVar("llm_usage_var", default=[])
     tracing_module.llm_call_log_var = ContextVar("llm_call_log_var", default=[])
+    tracing_module.current_llm_task_var = ContextVar(
+        "current_llm_task_var",
+        default="unknown",
+    )
     sys.modules["app.core.tracing"] = tracing_module
 
 from app.api.routes import conversations

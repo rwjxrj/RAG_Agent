@@ -170,30 +170,6 @@ class FetchFromUrlResponse(BaseModel):
     raw_html: str | None = None
 
 
-class CrawlWebsiteRequest(BaseModel):
-    url: str = Field(..., min_length=1, description="Seed URL to start crawling (e.g. https://example.com)")
-    max_pages: int = Field(default=50, ge=1, le=500, description="Maximum number of pages to crawl")
-    max_depth: int = Field(default=3, ge=0, le=10, description="Maximum link depth from seed URL")
-    ingest: bool = Field(default=True, description="If true, ingest crawled docs into knowledge base")
-    render_js: bool = Field(default=False, description="If true, render JavaScript before extracting page content")
-    exclude_prefixes: list[str] = Field(
-        default_factory=list,
-        description="URL prefixes to exclude. Any URL starting with one of these will not be crawled (e.g. https://example.com/admin)",
-    )
-
-
-class CrawledPage(BaseModel):
-    url: str
-    title: str
-    doc_type: str
-
-
-class CrawlWebsiteResponse(BaseModel):
-    status: str = "ok"
-    pages_crawled: int
-    pages_ingested: int
-    pages: list[CrawledPage] = Field(default_factory=list, description="List of crawled pages")
-
 
 class ReCrawlAllResponse(BaseModel):
     """Response for re-crawl-all: update all documents with http(s) source_url."""
@@ -317,6 +293,28 @@ class EmbeddingConfigUpdateRequest(BaseModel):
     embedding_dimensions: int | None = Field(default=None, gt=0)
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
+
+
+class RerankerConfigResponse(BaseModel):
+    """Reranker config - from DB with env fallback."""
+
+    reranker_provider: Literal["local", "cloud", "custom"]
+    reranker_model: str
+    reranker_url: str
+    reranker_api_format: Literal["rerank", "openai"] = "rerank"
+    reranker_base_url: str = ""
+    reranker_api_key: str = ""
+
+
+class RerankerConfigUpdateRequest(BaseModel):
+    """Partial update for reranker config."""
+
+    reranker_provider: Literal["local", "cloud", "custom"] | None = None
+    reranker_model: str | None = None
+    reranker_url: str | None = None
+    reranker_api_format: Literal["rerank", "openai"] | None = None
+    reranker_base_url: str | None = None
+    reranker_api_key: str | None = None
 
 
 class ArchiConfigResponse(BaseModel):
@@ -498,6 +496,20 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     checks: dict[str, str]
+
+
+class HealthCheckItem(BaseModel):
+    name: str
+    status: str  # "ok" | "error" | "timeout"
+    detail: str = ""
+    latency_ms: int = 0
+    warning: str | None = None
+
+
+class HealthCheckResponse(BaseModel):
+    status: str  # "healthy" | "degraded" | "unhealthy"
+    checks: list[HealthCheckItem]
+    summary: dict  # {"total": N, "ok": N, "failed": N, "warnings": N}
 
 
 # --- SSE streaming ---

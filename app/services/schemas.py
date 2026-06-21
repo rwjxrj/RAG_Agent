@@ -42,6 +42,79 @@ class HypothesisEvaluation:
 
 
 @dataclass
+class QueryIntent:
+    """What the user wants — intent, entities, risk."""
+
+    intent: str
+    entities: list[str]
+    constraints: dict[str, Any]
+    risk_level: str
+    user_goal: str = "unknown"
+    target_entity: str | None = None
+    ambiguity_type: str | None = None
+    is_ambiguous: bool = False
+    out_of_scope: bool = False
+
+
+@dataclass
+class RetrievalHints:
+    """How to retrieve — profile, queries, hypotheses."""
+
+    retrieval_profile: str = "generic_profile"
+    doc_type_prior: list[str] | None = None
+    keyword_queries: list[str] = field(default_factory=list)
+    semantic_queries: list[str] = field(default_factory=list)
+    rewrite_candidates: list[str] | None = None
+    primary_hypothesis: HypothesisSpec | None = None
+    fallback_hypotheses: list[HypothesisSpec] | None = None
+    evidence_families: list[str] | None = None
+    hard_requirements: list[str] | None = None
+    soft_requirements: list[str] | None = None
+    required_evidence: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ClarificationNeeds:
+    """What's missing — blocking vs refinement questions."""
+
+    answerable_without_clarification: bool = True
+    blocking_clarifying_questions: list[str] | None = None
+    refinement_questions: list[str] | None = None
+    missing_info_blocking: list[str] | None = None
+    missing_info_for_refinement: list[str] | None = None
+    blocking_missing_slots: list[str] | None = None
+    assistant_should_lead: bool = False
+    # Legacy
+    clarifying_questions: list[str] = field(default_factory=list)
+    missing_slots: list[str] | None = None
+
+
+@dataclass
+class AnswerContract:
+    """What kind of answer to produce — mode, type, shape."""
+
+    answer_mode: str = "PASS_EXACT"
+    answer_mode_hint: str = "strong"
+    support_level: str = "strong"
+    answer_type: str = "general"
+    answer_shape: str = "direct_lookup"
+    answer_expectation: str = "best_effort"
+    acceptable_related_types: list[str] | None = None
+
+
+@dataclass
+class QuerySlots:
+    """Parsed translation and slot metadata."""
+
+    canonical_query_en: str | None = None
+    original_query: str | None = None
+    source_lang: str = "en"
+    translation_needed: bool = False
+    language_confidence: float | None = None
+    resolved_slots: dict[str, Any] | None = None
+
+
+@dataclass
 class QuerySpec:
     """Normalized query specification from Phase 2 Normalizer."""
 
@@ -91,6 +164,153 @@ class QuerySpec:
     answer_mode_hint: str = "strong"  # strong | weak | ask_user
     extraction_mode: str = "rule_primary"  # llm_primary | rule_primary | rule_fallback
     config_overrides_applied: list[str] | None = None  # Enabled normalizer compatibility switches
+
+    # --- Sub-object accessors (populated in __post_init__) ---
+    query_intent: QueryIntent = field(init=False, repr=False)
+    retrieval_hints: RetrievalHints = field(init=False, repr=False)
+    clarification_needs: ClarificationNeeds = field(init=False, repr=False)
+    answer_contract: AnswerContract = field(init=False, repr=False)
+    query_slots: QuerySlots = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.query_intent = QueryIntent(
+            intent=self.intent,
+            entities=self.entities,
+            constraints=self.constraints,
+            risk_level=self.risk_level,
+            user_goal=self.user_goal,
+            target_entity=self.target_entity,
+            ambiguity_type=self.ambiguity_type,
+            is_ambiguous=self.is_ambiguous,
+            out_of_scope=self.out_of_scope,
+        )
+        self.retrieval_hints = RetrievalHints(
+            retrieval_profile=self.retrieval_profile,
+            doc_type_prior=self.doc_type_prior,
+            keyword_queries=self.keyword_queries,
+            semantic_queries=self.semantic_queries,
+            rewrite_candidates=self.rewrite_candidates,
+            primary_hypothesis=self.primary_hypothesis,
+            fallback_hypotheses=self.fallback_hypotheses,
+            evidence_families=self.evidence_families,
+            hard_requirements=self.hard_requirements,
+            soft_requirements=self.soft_requirements,
+            required_evidence=self.required_evidence,
+        )
+        self.clarification_needs = ClarificationNeeds(
+            answerable_without_clarification=self.answerable_without_clarification,
+            blocking_clarifying_questions=self.blocking_clarifying_questions,
+            refinement_questions=self.refinement_questions,
+            missing_info_blocking=self.missing_info_blocking,
+            missing_info_for_refinement=self.missing_info_for_refinement,
+            blocking_missing_slots=self.blocking_missing_slots,
+            assistant_should_lead=self.assistant_should_lead,
+            clarifying_questions=self.clarifying_questions,
+            missing_slots=self.missing_slots,
+        )
+        self.answer_contract = AnswerContract(
+            answer_mode=self.answer_mode,
+            answer_mode_hint=self.answer_mode_hint,
+            support_level=self.support_level,
+            answer_type=self.answer_type,
+            answer_shape=self.answer_shape,
+            answer_expectation=self.answer_expectation,
+            acceptable_related_types=self.acceptable_related_types,
+        )
+        self.query_slots = QuerySlots(
+            canonical_query_en=self.canonical_query_en,
+            original_query=self.original_query,
+            source_lang=self.source_lang,
+            translation_needed=self.translation_needed,
+            language_confidence=self.language_confidence,
+            resolved_slots=self.resolved_slots,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Typed phase output dataclasses
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RetrievePhaseOutput:
+    """Typed output from the retrieve phase."""
+
+    active_required_evidence: list[str] = field(default_factory=list)
+    active_hard_requirements: list[str] = field(default_factory=list)
+    active_soft_requirements: list[str] = field(default_factory=list)
+    active_hypothesis_name: str | None = None
+    active_answer_shape: str = "direct_lookup"
+    active_evidence_families: list[str] = field(default_factory=list)
+    retry_strategy_applied: dict[str, Any] = field(default_factory=dict)
+    evidence_eval_result: Any = None
+    hypothesis_history: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class GeneratePhaseOutput:
+    """Typed output from the generate phase."""
+
+    llm_resp: Any = None
+    messages: list[dict[str, str]] = field(default_factory=list)
+    answer_candidate: dict[str, Any] | None = None
+    generated_decision: str | None = None
+    self_critic_regenerated: bool = False
+    conversation_relevance: dict[str, Any] | None = None
+    reasoning_prewrite: dict[str, Any] | None = None
+    error: str | None = None
+
+
+@dataclass
+class VerifyPhaseOutput:
+    """Typed output from the verify phase."""
+
+    targeted_retry_pending: bool = False
+    targeted_retry_used: bool = False
+    targeted_retry_reason: str = "unknown"
+    targeted_retry_queries: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OrchestratorDebug:
+    """Debug/timing data from the pipeline runner."""
+
+    phase_timings: dict[str, float] = field(default_factory=dict)
+    error: str | None = None
+    candidate_render_applied: bool = False
+    final_polish_applied: bool = False
+
+
+@dataclass
+class RetrieveResult:
+    evidence_pack: Any
+    evidence: list[Any] = field(default_factory=list)
+
+
+@dataclass
+class AssessResult:
+    quality_report: Any
+    passes_quality_gate: bool
+
+
+@dataclass
+class DecideResult:
+    decision_result: "DecisionResult"
+
+
+@dataclass
+class GenerateResult:
+    answer: str
+    citations: list[Any]
+    followup: list[str]
+    confidence: float
+    answer_plan: "AnswerPlan | None"
+    generated_decision: str | None
+
+
+@dataclass
+class VerifyResult:
+    reviewer_result: Any
+    hypothesis_judge: dict[str, Any] | None = None
 
 
 @dataclass

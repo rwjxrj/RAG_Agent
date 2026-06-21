@@ -1,5 +1,10 @@
-import { useEffect, useState } from 'react'
-import { admin, type ArchiConfig, type EmbeddingConfig, type LLMConfig } from '../api/client'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { admin, type ArchiConfig } from '../api/client'
+import SettingsNavigation, {
+  isSettingsSection,
+  type SettingsSection,
+} from './settings/SettingsNavigation'
 import {
   Loader2,
   Cpu,
@@ -214,10 +219,14 @@ function detectLlmProviderPreset(baseUrl: string, model: string): LlmProviderPre
 }
 
 export default function Settings() {
-  const [, setConfig] = useState<LLMConfig | null>(null)
-  const [, setEmbeddingConfig] = useState<EmbeddingConfig | null>(null)
-  const [, setArchiConfig] = useState<ArchiConfig | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedSection = searchParams.get('section')
+  const activeSection: SettingsSection = isSettingsSection(requestedSection) ? requestedSection : 'llm'
+  const [loadStates, setLoadStates] = useState<Record<SettingsSection, 'idle' | 'loading' | 'ready' | 'error'>>({
+    llm: 'idle', embedding: 'idle', reranker: 'idle', prompt: 'idle', pipeline: 'idle', cache: 'ready',
+  })
+  const loadedSections = useRef<Set<SettingsSection>>(new Set(['cache']))
+  const [dirtySections, setDirtySections] = useState<Set<SettingsSection>>(new Set())
   const [saving, setSaving] = useState(false)
   const [savingEmbedding, setSavingEmbedding] = useState(false)
   const [savingArchi, setSavingArchi] = useState(false)
@@ -240,6 +249,14 @@ export default function Settings() {
   const [embeddingApiKey, setEmbeddingApiKey] = useState('')
   const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState('')
 
+  const [savingReranker, setSavingReranker] = useState(false)
+  const [rerankerProvider, setRerankerProvider] = useState<'local' | 'cloud' | 'custom'>('local')
+  const [rerankerModel, setRerankerModel] = useState('')
+  const [rerankerUrl, setRerankerUrl] = useState('')
+  const [rerankerApiFormat, setRerankerApiFormat] = useState<'rerank' | 'openai'>('rerank')
+  const [rerankerBaseUrl, setRerankerBaseUrl] = useState('')
+  const [rerankerApiKey, setRerankerApiKey] = useState('')
+
   const [languageDetect, setLanguageDetect] = useState(true)
   const [decisionRouterLlm, setDecisionRouterLlm] = useState(false)
   const [evidenceEvaluator, setEvidenceEvaluator] = useState(false)
@@ -259,6 +276,18 @@ export default function Settings() {
   const [autoGenUrl, setAutoGenUrl] = useState('')
   const [autoGenLoading, setAutoGenLoading] = useState(false)
 
+  const markDirty = (section: SettingsSection) => {
+    setDirtySections((current) => new Set(current).add(section))
+  }
+
+  const markSaved = (section: SettingsSection) => {
+    setDirtySections((current) => {
+      const next = new Set(current)
+      next.delete(section)
+      return next
+    })
+  }
+
   const syncArchiState = (archiData: ArchiConfig) => {
     const flags = {
       languageDetect: archiData.language_detect_enabled,
@@ -274,7 +303,6 @@ export default function Settings() {
       pageKindFilterEnabled: archiData.page_kind_filter_enabled ?? false,
       llmTaskAwareRouting: archiData.llm_task_aware_routing_enabled ?? true,
     }
-    setArchiConfig(archiData)
     setLanguageDetect(flags.languageDetect)
     setDecisionRouterLlm(flags.decisionRouterLlm)
     setEvidenceEvaluator(flags.evidenceEvaluator)
@@ -306,29 +334,72 @@ export default function Settings() {
     setRetrievalDocTypeUseLlm(flags.retrievalDocTypeUseLlm)
     setPageKindFilterEnabled(flags.pageKindFilterEnabled)
     setLlmTaskAwareRouting(flags.llmTaskAwareRouting)
+    markDirty('pipeline')
   }
 
-  useEffect(() => {
-    Promise.all([admin.getLLMConfig(), admin.getEmbeddingConfig(), admin.getArchiConfig(), admin.getSystemPrompt()])
-      .then(([llmData, embeddingData, archiData, promptData]) => {
-        setConfig(llmData)
+  const loadSection = useCallback(async (section: SettingsSection, force = false) => {
+    if (!force && loadedSections.current.has(section)) return
+    if (section === 'cache') return
+    loadedSections.current.add(section)
+    setLoadStates((current) => ({ ...current, [section]: 'loading' }))
+    setError(null)
+    try {
+      if (section === 'llm') {
+        const llmData = await admin.getLLMConfig()
         setLlmModel(llmData.llm_model)
         setLlmFallbackModel(llmData.llm_fallback_model)
         setLlmApiKey(llmData.llm_api_key)
         setLlmBaseUrl(llmData.llm_base_url)
         setLlmProviderPreset(detectLlmProviderPreset(llmData.llm_base_url, llmData.llm_model))
-        setEmbeddingConfig(embeddingData)
+      } else if (section === 'embedding') {
+        const embeddingData = await admin.getEmbeddingConfig()
         setEmbeddingProvider(embeddingData.embedding_provider)
         setEmbeddingModel(embeddingData.embedding_model)
         setEmbeddingDimensions(embeddingData.embedding_dimensions)
         setEmbeddingApiKey(embeddingData.embedding_api_key)
         setEmbeddingBaseUrl(embeddingData.embedding_base_url)
+      } else if (section === 'reranker') {
+        const rerankerData = await admin.getRerankerConfig()
+        setRerankerProvider(rerankerData.reranker_provider)
+        setRerankerModel(rerankerData.reranker_model)
+        setRerankerUrl(rerankerData.reranker_url)
+        setRerankerApiFormat(rerankerData.reranker_api_format || 'rerank')
+        setRerankerBaseUrl(rerankerData.reranker_base_url || '')
+        setRerankerApiKey(rerankerData.reranker_api_key || '')
+      } else if (section === 'pipeline') {
+        const archiData = await admin.getArchiConfig()
         syncArchiState(archiData)
+      } else if (section === 'prompt') {
+        const promptData = await admin.getSystemPrompt()
         setSystemPrompt(promptData.value)
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : '加载配置失败'))
-      .finally(() => setLoading(false))
+      }
+      setLoadStates((current) => ({ ...current, [section]: 'ready' }))
+    } catch (e) {
+      loadedSections.current.delete(section)
+      setError(e instanceof Error ? e.message : '加载配置失败')
+      setLoadStates((current) => ({ ...current, [section]: 'error' }))
+    }
   }, [])
+
+  useEffect(() => {
+    void loadSection(activeSection)
+  }, [activeSection, loadSection])
+
+  useEffect(() => {
+    if (!isSettingsSection(requestedSection)) {
+      setSearchParams({ section: 'llm' }, { replace: true })
+    }
+  }, [requestedSection, setSearchParams])
+
+  useEffect(() => {
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (dirtySections.size === 0) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [dirtySections])
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -342,14 +413,14 @@ export default function Settings() {
         llm_api_key: llmApiKey,
         llm_base_url: llmBaseUrl.trim(),
       })
-      await admin.updateArchiConfig({
-        llm_model_economy: llmModelEconomy.trim(),
-        llm_task_aware_routing_enabled: llmTaskAwareRouting,
-      })
       setSuccess('配置已保存，缓存已刷新。')
       const data = await admin.getLLMConfig()
-      setConfig(data)
+      setLlmModel(data.llm_model)
+      setLlmFallbackModel(data.llm_fallback_model)
+      setLlmApiKey(data.llm_api_key)
+      setLlmBaseUrl(data.llm_base_url)
       setLlmProviderPreset(detectLlmProviderPreset(data.llm_base_url, data.llm_model))
+      markSaved('llm')
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败')
     } finally {
@@ -371,13 +442,13 @@ export default function Settings() {
         embedding_base_url: embeddingBaseUrl.trim(),
       })
       const data = await admin.getEmbeddingConfig()
-      setEmbeddingConfig(data)
       setEmbeddingProvider(data.embedding_provider)
       setEmbeddingModel(data.embedding_model)
       setEmbeddingDimensions(data.embedding_dimensions)
       setEmbeddingApiKey(data.embedding_api_key)
       setEmbeddingBaseUrl(data.embedding_base_url)
       setSuccess('向量化模型配置已保存，缓存已刷新。')
+      markSaved('embedding')
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存向量化配置失败')
     } finally {
@@ -385,33 +456,46 @@ export default function Settings() {
     }
   }
 
+  const handleSaveReranker = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setSuccess(null)
+    setSavingReranker(true)
+    try {
+      await admin.updateRerankerConfig({
+        reranker_provider: rerankerProvider,
+        reranker_model: rerankerModel.trim(),
+        reranker_url: rerankerUrl.trim(),
+        reranker_api_format: rerankerApiFormat,
+        reranker_base_url: rerankerBaseUrl.trim(),
+        reranker_api_key: rerankerApiKey,
+      })
+      const data = await admin.getRerankerConfig()
+      setRerankerProvider(data.reranker_provider)
+      setRerankerModel(data.reranker_model)
+      setRerankerUrl(data.reranker_url)
+      setRerankerApiFormat(data.reranker_api_format || 'rerank')
+      setRerankerBaseUrl(data.reranker_base_url || '')
+      setRerankerApiKey(data.reranker_api_key || '')
+      setSuccess('重排序模型配置已保存，缓存已刷新。')
+      markSaved('reranker')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存重排序配置失败')
+    } finally {
+      setSavingReranker(false)
+    }
+  }
+
   const handleRefresh = async () => {
+    if (dirtySections.has(activeSection) && !window.confirm('重新加载会放弃当前设置项尚未保存的修改，是否继续？')) return
     setError(null)
     setSuccess(null)
     setRefreshing(true)
     try {
       await admin.refreshConfigCache()
-      const [llmData, embeddingData, archiData, promptData] = await Promise.all([
-        admin.getLLMConfig(),
-        admin.getEmbeddingConfig(),
-        admin.getArchiConfig(),
-        admin.getSystemPrompt(),
-      ])
-      setConfig(llmData)
-      setLlmModel(llmData.llm_model)
-      setLlmFallbackModel(llmData.llm_fallback_model)
-      setLlmApiKey(llmData.llm_api_key)
-      setLlmBaseUrl(llmData.llm_base_url)
-      setLlmProviderPreset(detectLlmProviderPreset(llmData.llm_base_url, llmData.llm_model))
-      setEmbeddingConfig(embeddingData)
-      setEmbeddingProvider(embeddingData.embedding_provider)
-      setEmbeddingModel(embeddingData.embedding_model)
-      setEmbeddingDimensions(embeddingData.embedding_dimensions)
-      setEmbeddingApiKey(embeddingData.embedding_api_key)
-      setEmbeddingBaseUrl(embeddingData.embedding_base_url)
-      syncArchiState(archiData)
-      setSystemPrompt(promptData.value)
-      setSuccess('已从数据库刷新缓存。')
+      await loadSection(activeSection, true)
+      markSaved(activeSection)
+      setSuccess('当前配置已从数据库重新加载。')
     } catch (e) {
       setError(e instanceof Error ? e.message : '刷新失败')
     } finally {
@@ -462,6 +546,7 @@ export default function Settings() {
       setSuccess('Archi v3 配置已保存。')
       const data = await admin.getArchiConfig()
       syncArchiState(data)
+      markSaved('pipeline')
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存 Archi 配置失败')
     } finally {
@@ -476,7 +561,6 @@ export default function Settings() {
     setLlmModel(preset.primaryModel)
     setLlmFallbackModel(preset.fallbackModel)
     setLlmBaseUrl(preset.baseUrl)
-    setLlmModelEconomy(preset.economyModel)
   }
 
   const handleEmbeddingProviderChange = (value: 'openai' | 'custom' | 'ollama') => {
@@ -516,6 +600,7 @@ export default function Settings() {
     try {
       await admin.updateSystemPrompt({ value: systemPrompt })
       setSuccess('系统提示词已保存，缓存已刷新。')
+      markSaved('prompt')
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存提示词失败')
     } finally {
@@ -523,16 +608,8 @@ export default function Settings() {
     }
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 size={28} className="animate-spin text-violet-400" />
-      </div>
-    )
-  }
-
   return (
-    <div className="animate-slide-up max-w-2xl space-y-8">
+    <div className="animate-slide-up max-w-5xl space-y-6">
       <header className="mb-2 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">设置</h1>
@@ -540,19 +617,30 @@ export default function Settings() {
             配置 LLM 模型、API Token 和 Base URL。优先使用数据库配置，缺省时回退到环境变量。
           </p>
         </div>
-        <button
+        {activeSection !== 'cache' && <button
           type="button"
           onClick={handleRefresh}
-          disabled={refreshing}
+          disabled={refreshing || loadStates[activeSection] === 'loading'}
           className="flex items-center gap-2 px-4 py-2 rounded-xl input-glass text-sm text-zinc-400 hover:text-white transition-colors disabled:opacity-50"
         >
           {refreshing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-          刷新
-        </button>
+          刷新当前配置
+        </button>}
       </header>
 
-      {(error || success) && (
+      <SettingsNavigation
+        active={activeSection}
+        dirtySections={dirtySections}
+        onChange={(section) => {
+          setError(null)
+          setSuccess(null)
+          setSearchParams({ section })
+        }}
+      />
+
+      {(error || success) && loadStates[activeSection] !== 'error' && (
         <div
+          role={error ? 'alert' : 'status'}
           className={`flex items-center gap-3 px-4 py-3 rounded-xl ${
             error ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
           }`}
@@ -562,7 +650,24 @@ export default function Settings() {
         </div>
       )}
 
-      <section className="glass rounded-2xl p-6">
+      {loadStates[activeSection] === 'loading' && (
+        <div className="glass flex min-h-64 items-center justify-center rounded-2xl" role="status">
+          <Loader2 size={28} className="animate-spin text-blue-500" />
+          <span className="ml-3 text-sm text-slate-500">正在加载当前配置…</span>
+        </div>
+      )}
+
+      {loadStates[activeSection] === 'error' && (
+        <div className="glass rounded-2xl p-8 text-center" role="alert">
+          <AlertCircle size={24} className="mx-auto text-red-500" />
+          <p className="mt-3 text-sm text-slate-600">当前配置加载失败，其他设置项仍可正常使用。</p>
+          <button type="button" onClick={() => void loadSection(activeSection, true)} className="mt-4 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white">
+            重新加载
+          </button>
+        </div>
+      )}
+
+      {activeSection === 'llm' && loadStates.llm === 'ready' && <section id="settings-panel-llm" role="tabpanel" aria-labelledby="settings-tab-llm" className="glass max-w-3xl rounded-2xl p-6">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
           <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
             <Cpu size={15} className="text-violet-400" />
@@ -572,7 +677,7 @@ export default function Settings() {
         <p className="text-sm text-zinc-400 mb-5">
           配置模型名称、API key（Token）和 Base URL。可选择中国模型预设，也可手动填写任意 OpenAI-compatible 服务。
         </p>
-        <form onSubmit={handleSave} className="space-y-4">
+        <form onSubmit={handleSave} onChange={() => markDirty('llm')} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-zinc-500 mb-1.5">模型供应商预设</label>
             <select
@@ -664,9 +769,9 @@ export default function Settings() {
             保存
           </button>
         </form>
-      </section>
+      </section>}
 
-      <section className="glass rounded-2xl p-6">
+      {activeSection === 'embedding' && loadStates.embedding === 'ready' && <section id="settings-panel-embedding" role="tabpanel" aria-labelledby="settings-tab-embedding" className="glass max-w-3xl rounded-2xl p-6">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
           <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
             <Cpu size={15} className="text-violet-400" />
@@ -676,7 +781,7 @@ export default function Settings() {
         <p className="text-sm text-zinc-400 mb-5">
           上传知识库时用于生成向量，和 LLM 是两类模型。Ollama 本地模型建议使用 nomic-embed-text。
         </p>
-        <form onSubmit={handleSaveEmbedding} className="space-y-4">
+        <form onSubmit={handleSaveEmbedding} onChange={() => markDirty('embedding')} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-zinc-500 mb-1.5">向量化供应商</label>
             <select
@@ -758,9 +863,145 @@ export default function Settings() {
             保存向量化配置
           </button>
         </form>
-      </section>
+      </section>}
 
-      <section className="glass rounded-2xl p-6">
+      {activeSection === 'reranker' && loadStates.reranker === 'ready' && <section id="settings-panel-reranker" role="tabpanel" aria-labelledby="settings-tab-reranker" className="glass max-w-3xl rounded-2xl p-6">
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
+          <div className="w-7 h-7 rounded-lg bg-orange-500/10 flex items-center justify-center">
+            <Zap size={15} className="text-orange-400" />
+          </div>
+          重排序模型
+        </h2>
+        <p className="text-sm text-zinc-400 mb-5">
+          检索后对结果进行重排序，提升相关性。本地模式使用 sentence-transformers 交叉编码器，云端模式使用 Cohere Rerank API。
+        </p>
+        <form onSubmit={handleSaveReranker} onChange={() => markDirty('reranker')} className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 mb-1.5">重排序供应商</label>
+            <select
+              value={rerankerProvider}
+              onChange={(e) => setRerankerProvider(e.target.value as 'local' | 'cloud' | 'custom')}
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
+              disabled={savingReranker}
+            >
+              <option value="local">本地 (sentence-transformers)</option>
+              <option value="cloud">云端 Rerank API</option>
+              <option value="custom">不使用重排序 (identity)</option>
+            </select>
+          </div>
+          {rerankerProvider === 'local' && (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-zinc-500 mb-1.5">模型名称</label>
+                <input
+                  type="text"
+                  value={rerankerModel}
+                  onChange={(e) => setRerankerModel(e.target.value)}
+                  placeholder="cross-encoder/ms-marco-MiniLM-L-6-v2"
+                  className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
+                  disabled={savingReranker}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-500 mb-1.5 flex items-center gap-1.5">
+                  <Link2 size={12} />
+                  服务地址
+                </label>
+                <input
+                  type="url"
+                  value={rerankerUrl}
+                  onChange={(e) => setRerankerUrl(e.target.value)}
+                  placeholder="http://localhost:8001/rerank"
+                  className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
+                  disabled={savingReranker}
+                />
+                <p className="text-xs text-zinc-500 mt-1">
+                  本地 reranker HTTP 服务地址，需要实现 POST /rerank 接口。
+                </p>
+              </div>
+            </>
+          )}
+          {rerankerProvider === 'cloud' && (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-zinc-500 mb-1.5">API 格式</label>
+                <select
+                  value={rerankerApiFormat}
+                  onChange={(e) => setRerankerApiFormat(e.target.value as 'rerank' | 'openai')}
+                  className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
+                  disabled={savingReranker}
+                >
+                  <option value="rerank">Rerank API (Cohere/Jina/硅基流动/自定义)</option>
+                  <option value="openai">OpenAI Chat Completions 格式</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-500 mb-1.5 flex items-center gap-1.5">
+                  <Link2 size={12} />
+                  API Base URL
+                </label>
+                <input
+                  type="url"
+                  value={rerankerBaseUrl}
+                  onChange={(e) => setRerankerBaseUrl(e.target.value)}
+                  placeholder={rerankerApiFormat === 'rerank' ? 'https://api.cohere.com/v1' : 'https://api.openai.com/v1'}
+                  className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
+                  disabled={savingReranker}
+                />
+                <p className="text-xs text-zinc-500 mt-1">
+                  {rerankerApiFormat === 'rerank'
+                    ? '支持 Cohere (api.cohere.com/v1)、Jina (api.jina.ai/v1)、硅基流动 (api.siliconflow.cn/v1) 等。'
+                    : 'OpenAI 兼容的 chat/completions 端点。'}
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-500 mb-1.5">模型名称</label>
+                <input
+                  type="text"
+                  value={rerankerModel}
+                  onChange={(e) => setRerankerModel(e.target.value)}
+                  placeholder={rerankerApiFormat === 'rerank' ? 'rerank-multilingual-v3.0' : 'gpt-4o-mini'}
+                  className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
+                  disabled={savingReranker}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-500 mb-1.5 flex items-center gap-1.5">
+                  <Key size={12} />
+                  API Key
+                </label>
+                <input
+                  type="password"
+                  value={rerankerApiKey}
+                  onChange={(e) => setRerankerApiKey(e.target.value)}
+                  placeholder="输入 API Key"
+                  className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
+                  disabled={savingReranker}
+                  autoComplete="off"
+                />
+              </div>
+            </>
+          )}
+          {rerankerProvider === 'custom' && (
+            <p className="text-sm text-zinc-500 bg-zinc-800/50 rounded-lg p-3">
+              使用 identity reranker，检索结果按原始分数排序，无重排序效果。适合嵌入模型质量较高或数据量较小的场景。
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={savingReranker}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{
+              background: 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)',
+            }}
+          >
+            {savingReranker ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            保存重排序配置
+          </button>
+        </form>
+      </section>}
+
+      {activeSection === 'cache' && <section id="settings-panel-cache" role="tabpanel" aria-labelledby="settings-tab-cache" className="glass max-w-3xl rounded-2xl p-6">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
           <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
             <RefreshCw size={15} className="text-violet-400" />
@@ -782,9 +1023,9 @@ export default function Settings() {
           {refreshingConversationCache ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
           刷新会话缓存
         </button>
-      </section>
+      </section>}
 
-      <section className="glass rounded-2xl p-6">
+      {activeSection === 'prompt' && loadStates.prompt === 'ready' && <section id="settings-panel-prompt" role="tabpanel" aria-labelledby="settings-tab-prompt" className="glass max-w-3xl rounded-2xl p-6">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
           <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
             <FileText size={15} className="text-violet-400" />
@@ -822,7 +1063,7 @@ export default function Settings() {
             </button>
           </div>
         </div>
-        <form onSubmit={handleSavePrompt} className="space-y-4">
+        <form onSubmit={handleSavePrompt} onChange={() => markDirty('prompt')} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-zinc-500 mb-1.5">提示词</label>
             <textarea
@@ -846,9 +1087,9 @@ export default function Settings() {
             保存提示词
           </button>
         </form>
-      </section>
+      </section>}
 
-      <section className="glass rounded-2xl p-6">
+      {activeSection === 'pipeline' && loadStates.pipeline === 'ready' && <section id="settings-panel-pipeline" role="tabpanel" aria-labelledby="settings-tab-pipeline" className="glass max-w-3xl rounded-2xl p-6">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
           <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
             <Sparkles size={15} className="text-violet-400" />
@@ -858,7 +1099,14 @@ export default function Settings() {
         <p className="text-sm text-zinc-400 mb-5">
           选择日常回答策略。推荐使用平衡模式；需要排查问题时再展开高级设置。
         </p>
-        <form onSubmit={handleSaveArchi} className="space-y-4">
+        <form
+          onSubmit={handleSaveArchi}
+          onChange={() => markDirty('pipeline')}
+          onClick={(event) => {
+            if ((event.target as HTMLElement).closest('[role="switch"]')) markDirty('pipeline')
+          }}
+          className="space-y-4"
+        >
           <div>
             <div className="flex items-center justify-between gap-3 mb-3">
               <div>
@@ -1021,7 +1269,7 @@ export default function Settings() {
             保存回答流程
           </button>
         </form>
-      </section>
+      </section>}
     </div>
   )
 }

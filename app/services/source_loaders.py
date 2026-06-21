@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
-
-
-_PRODUCT_FAMILY_KEYS = ("windows_vps", "kvm_vps", "macos_vps", "dedicated")
+from app.services.normalization import (
+    infer_page_kind as _infer_page_kind,
+    normalize_product_family as _normalize_product_family,
+)
 
 
 def _doc_type_from_url(url: str) -> str:
@@ -30,60 +31,6 @@ def _doc_type_from_url(url: str) -> str:
             if token and token in url_lower:
                 return dt
     return "other"
-
-
-def _infer_page_kind(
-    *,
-    url: str,
-    doc_type: str,
-    title: str = "",
-    text: str = "",
-) -> str:
-    """Infer lightweight page taxonomy for retrieval weighting."""
-    dt = (doc_type or "").strip().lower()
-    if dt == "conversation" or url.startswith("ticket://"):
-        return "conversation"
-    if dt in {"faq"}:
-        return "faq"
-    if dt in {"howto", "docs"}:
-        return "howto"
-    if dt in {"policy", "tos"}:
-        return "policy"
-    if dt == "blog":
-        return "blog"
-
-    blob = f"{url} {title} {text}".lower()
-    if any(token in blob for token in ("/order", "checkout", "cart", "buy now", "purchase")):
-        return "order_page"
-    if dt == "pricing" or any(token in blob for token in ("pricing", "plans", "price", "/mo")):
-        return "pricing_table"
-    if any(token in blob for token in ("vps", "server", "dedicated", "product")):
-        return "product_page"
-    return "blog"
-
-
-def _normalize_product_family(value: str | None) -> str | None:
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return None
-    aliases = {
-        "windows": "windows_vps",
-        "windows_vps": "windows_vps",
-        "windows-rdp": "windows_vps",
-        "rdp": "windows_vps",
-        "kvm": "kvm_vps",
-        "kvm_vps": "kvm_vps",
-        "linux_vps": "kvm_vps",
-        "linux": "kvm_vps",
-        "macos": "macos_vps",
-        "mac": "macos_vps",
-        "macos_vps": "macos_vps",
-        "dedicated": "dedicated",
-        "dedicated_server": "dedicated",
-        "dedicated_servers": "dedicated",
-    }
-    normalized = aliases.get(raw, raw)
-    return normalized if normalized in _PRODUCT_FAMILY_KEYS else None
 
 
 def _infer_product_family(

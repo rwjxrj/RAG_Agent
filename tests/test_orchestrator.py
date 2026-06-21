@@ -4,13 +4,14 @@ import pytest
 
 from app.services.orchestrator import (
     Orchestrator,
+    PipelineRunner,
     OrchestratorAction,
     OrchestratorContext,
     OrchestratorState,
     PhaseResult,
 )
 from app.services.reviewer import ReviewerResult, ReviewerStatus
-from app.services.schemas import DecisionResult, QuerySpec
+from app.services.schemas import DecisionResult, QuerySpec, VerifyPhaseOutput
 
 
 def _ctx(
@@ -22,10 +23,10 @@ def _ctx(
     return OrchestratorContext(query=query, state=state, max_attempts=max_attempts, **kwargs)
 
 
-def test_next_action_init_returns_understand():
+def test_next_action_init_returns_intent_cache():
     orch = Orchestrator()
     ctx = _ctx(OrchestratorState.INIT)
-    assert orch.next_action(ctx) == OrchestratorAction.UNDERSTAND
+    assert orch.next_action(ctx) == OrchestratorAction.INTENT_CACHE
 
 
 def test_next_action_understanding_returns_retrieve():
@@ -227,7 +228,7 @@ def test_next_action_reviewing_ask_user_can_schedule_targeted_retry():
 
     assert ctx.state == OrchestratorState.REVIEWING
     assert ctx.retry_query_override == "windows vps order page"
-    assert ctx.extra.get("verify_targeted_retry_pending") is True
+    assert ctx.verify_output.targeted_retry_pending is True
     assert orch.next_action(ctx, reviewer_status="ASK_USER") == OrchestratorAction.RETRY_RETRIEVE
 
 
@@ -237,7 +238,7 @@ def test_next_action_reviewing_ask_user_no_second_targeted_retry():
         OrchestratorState.GENERATING,
         retrieval_attempt=1,
         max_attempts=2,
-        extra={"verify_targeted_retry_used": True},
+        verify_output=VerifyPhaseOutput(targeted_retry_used=True),
     )
     rr = ReviewerResult(
         status=ReviewerStatus.ASK_USER,
@@ -252,7 +253,7 @@ def test_next_action_reviewing_ask_user_no_second_targeted_retry():
         PhaseResult(reviewer_result=rr),
     )
 
-    assert ctx.extra.get("verify_targeted_retry_pending") is not True
+    assert ctx.verify_output.targeted_retry_pending is not True
     assert orch.next_action(ctx, reviewer_status="ASK_USER") == OrchestratorAction.ASK_USER
 
 
@@ -277,7 +278,7 @@ def test_next_action_reviewing_ask_user_no_targeted_retry_when_flag_disabled():
         PhaseResult(reviewer_result=rr),
     )
 
-    assert ctx.extra.get("verify_targeted_retry_pending") is not True
+    assert ctx.verify_output.targeted_retry_pending is not True
     assert orch.next_action(ctx, reviewer_status="ASK_USER") == OrchestratorAction.ASK_USER
 
 
@@ -320,7 +321,7 @@ def test_context_current_lane_from_decision_result():
 @pytest.mark.asyncio
 async def test_run_terminates_on_ask_user():
     """Run terminates when handler returns terminal output for ASK_USER."""
-    class MockHandlers:
+    class MockRunner(PipelineRunner):
         async def execute(self, ctx, action):
             if action == OrchestratorAction.UNDERSTAND:
                 return PhaseResult(
@@ -343,10 +344,13 @@ async def test_run_terminates_on_ask_user():
         async def build_output(self, ctx, action):
             return {"decision": action.value, "answer": ""}
 
-    orch = Orchestrator()
-    ctx = OrchestratorContext(query="test", max_attempts=1)
-    handlers = MockHandlers()
-    out = await orch.run(ctx, handlers)
+    orch = MockRunner(retrieval=object(), llm=object(), reviewer=object())
+    ctx = OrchestratorContext(
+        query="test",
+        state=OrchestratorState.UNDERSTANDING,
+        max_attempts=1,
+    )
+    out = await orch.run(ctx)
     assert out["decision"] == "ask_user"
 
 
@@ -355,7 +359,7 @@ async def test_run_records_phase_timings_for_executed_actions():
     """Run records timings without changing phase order or terminal output."""
     from app.services.reviewer import ReviewerResult, ReviewerStatus
 
-    class MockHandlers:
+    class MockRunner(PipelineRunner):
         async def execute(self, ctx, action):
             if action == OrchestratorAction.UNDERSTAND:
                 return PhaseResult(effective_query="test")
@@ -389,13 +393,17 @@ async def test_run_records_phase_timings_for_executed_actions():
         async def build_output(self, ctx, action):
             return {
                 "decision": action.value,
-                "timings": ctx.extra.get("phase_timings", {}),
+                "timings": ctx.orchestrator_debug.phase_timings,
             }
 
-    orch = Orchestrator()
-    ctx = OrchestratorContext(query="test", max_attempts=1)
+    orch = MockRunner(retrieval=object(), llm=object(), reviewer=object())
+    ctx = OrchestratorContext(
+        query="test",
+        state=OrchestratorState.UNDERSTANDING,
+        max_attempts=1,
+    )
 
-    out = await orch.run(ctx, MockHandlers())
+    out = await orch.run(ctx)
 
     assert out["decision"] == "done"
     timings = out["timings"]
@@ -403,3 +411,61 @@ async def test_run_records_phase_timings_for_executed_actions():
     assert timings["assess_evidence"] >= 0.0
     assert timings["generate"] >= 0.0
     assert timings["verify"] >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_executes_retrieve_with_owned_dependency(monkeypatch):
+    """Orchestrator owns phase dependencies instead of receiving a handler layer."""
+    retrieval = object()
+    llm = object()
+    reviewer = object()
+    calls = []
+
+    async def fake_execute_retrieve(ctx, *, retrieval, orchestrator, settings):
+        calls.append((ctx, retrieval, orchestrator, settings))
+        return PhaseResult(evidence=[])
+
+    monkeypatch.setattr(
+        "app.services.phases.execute_retrieve",
+        fake_execute_retrieve,
+    )
+    orch = Orchestrator(retrieval=retrieval, llm=llm, reviewer=reviewer)
+    ctx = OrchestratorContext(query="test")
+
+    result = await orch.execute(ctx, OrchestratorAction.RETRIEVE)
+
+    assert result.evidence == []
+    assert calls == [(ctx, retrieval, orch, orch._settings)]
+
+
+@pytest.mark.asyncio
+async def test_run_returns_cached_intent_before_router():
+    class MatchedIntent:
+        intent = "hello"
+        answer = "cached answer"
+
+    class RouterMustNotRun:
+        def route(self, payload):
+            raise AssertionError("router must be skipped on intent cache hit")
+
+    orch = Orchestrator(
+        retrieval=object(),
+        llm=object(),
+        reviewer=object(),
+        agentic_router=RouterMustNotRun(),
+        intent_matcher=lambda query: MatchedIntent(),
+    )
+
+    output = await orch.run(OrchestratorContext(query="你好", trace_id="trace-intent"))
+
+    assert output.decision == "PASS"
+    assert output.answer == "cached answer"
+    assert output.debug["intent_cache"] == "hello"
+
+
+def test_pipeline_runner_is_public_entrypoint_without_extra_context_dict():
+    runner = PipelineRunner(retrieval=object(), llm=object(), reviewer=object())
+    ctx = OrchestratorContext(query="test")
+
+    assert runner.__class__.__name__ == "PipelineRunner"
+    assert not hasattr(ctx, "extra")

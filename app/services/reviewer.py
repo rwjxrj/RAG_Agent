@@ -16,11 +16,16 @@ from app.services.claim_parser import (
     is_number_claim,
     trim_unsupported_claims,
 )
+from app.services.normalization import (
+    configured_exact_answer_types as _configured_exact_answer_types,
+    normalize_answer_mode as _normalize_answer_mode,
+    normalize_answer_type as _normalize_answer_type,
+    normalize_support_level as _normalize_support_level,
+    to_str_list as _to_str_list,
+)
 from app.services.retry_planner import plan_targeted_retry_queries
 
 logger = get_logger(__name__)
-
-_DEFAULT_EXACT_ANSWER_TYPES = {"direct_link", "pricing", "policy"}
 _SOFT_DOC_TYPES = {"faq", "blog", "conversation"}
 _PARTIAL_DISCLAIMER_MARKERS = (
     "closest related",
@@ -41,22 +46,6 @@ _PARTIAL_DISCLAIMER_MARKERS = (
 )
 _PARTIAL_DEFAULT_DISCLAIMER = "That's the best we have from our docs."
 _URL_PATTERN = re.compile(r"https?://\S+", re.I)
-
-
-def _configured_exact_answer_types() -> set[str]:
-    raw = getattr(get_settings(), "exact_answer_types", None)
-    if isinstance(raw, str):
-        configured = [item.strip() for item in raw.split(",") if item.strip()]
-    elif isinstance(raw, (list, tuple, set)):
-        configured = list(raw)
-    else:
-        configured = []
-    normalized = {
-        str(item).strip().lower()
-        for item in configured
-        if str(item).strip()
-    }
-    return normalized or set(_DEFAULT_EXACT_ANSWER_TYPES)
 
 
 class ReviewerStatus(str, Enum):
@@ -83,53 +72,6 @@ class ReviewerResult:
     unsupported_claims: list[str] = field(default_factory=list)
     weakly_supported_claims: list[str] = field(default_factory=list)
     claim_to_citation_map: dict[str, list[str]] = field(default_factory=dict)
-
-
-def _normalize_answer_type(value: Any, *, default: str = "general") -> str:
-    raw = str(value or "").strip().lower()
-    aliases = {
-        "link": "direct_link",
-        "order_link": "direct_link",
-        "buy_link": "direct_link",
-        "price": "pricing",
-    }
-    normalized = aliases.get(raw, raw)
-    return normalized or default
-
-
-def _normalize_answer_mode(value: Any, *, default: str = "PASS_EXACT") -> str:
-    raw = str(value or "").strip().upper()
-    aliases = {
-        "EXACT": "PASS_EXACT",
-        "PARTIAL": "PASS_PARTIAL",
-        "PASS_WEAK": "PASS_PARTIAL",
-        "PASS_STRONG": "PASS_EXACT",
-        "CLARIFY": "ASK_USER",
-    }
-    normalized = aliases.get(raw, raw)
-    if normalized in {"PASS_EXACT", "PASS_PARTIAL", "ASK_USER"}:
-        return normalized
-    return default
-
-
-def _normalize_support_level(value: Any, *, default: str = "strong") -> str:
-    raw = str(value or "").strip().lower()
-    if raw in {"strong", "partial", "weak"}:
-        return raw
-    return default
-
-
-def _to_str_list(value: Any, *, limit: int = 6) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    out: list[str] = []
-    for item in value:
-        text = str(item).strip()
-        if text and text not in out:
-            out.append(text)
-        if len(out) >= limit:
-            break
-    return out
 
 
 def _citation_doc_types(

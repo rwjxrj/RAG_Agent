@@ -146,13 +146,13 @@ def build_flow_debug(
         debug["retry_strategy"] = retry_strategy_applied
     if query_spec:
         debug["query_spec"] = {
-            "intent": query_spec.intent,
-            "risk_level": query_spec.risk_level,
-            "is_ambiguous": query_spec.is_ambiguous,
-            "required_evidence": query_spec.required_evidence,
-            "canonical_query_en": query_spec.canonical_query_en,
-            "entities": query_spec.entities,
-            "resolved_slots": query_spec.resolved_slots,
+            "intent": query_spec.query_intent.intent,
+            "risk_level": query_spec.query_intent.risk_level,
+            "is_ambiguous": query_spec.query_intent.is_ambiguous,
+            "required_evidence": query_spec.retrieval_hints.required_evidence,
+            "canonical_query_en": query_spec.query_slots.canonical_query_en,
+            "entities": query_spec.query_intent.entities,
+            "resolved_slots": query_spec.query_slots.resolved_slots,
             "config_overrides_applied": query_spec.config_overrides_applied,
             "extraction_mode": getattr(query_spec, "extraction_mode", None),
         }
