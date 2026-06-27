@@ -142,6 +142,9 @@ flowchart TD
 
 ### 查询 debug_metadata
 - `debug_metadata.timings` 会返回 `query_extract`、`retrieve`、`assess_evidence`、`rerank`、`generate`、`verify`、`total` 的秒级耗时；这些字段也会作为 `debug_metadata` 顶层字段返回，缺失阶段以 `0.0` 返回。
+- 开启 `debug_llm_calls` 后，`debug_metadata.llm_call_log` 会按每次真实模型尝试记录 `task`、`model`、`attempt`、`is_fallback`、`duration_seconds`、`status` 和 `error_type`；成功记录继续包含 prompt、response、token 和成本信息。缓存命中不会计作真实模型尝试。
+- 每次 LLM 调用必须通过作用域化的 `llm_task_context()` 设置 `task` 标签，调用结束后恢复上一个标签，避免 normalizer、evidence_evaluator、evidence_quality、generate 等任务在评测追踪中串台。
+- `LLMGateway` 会根据 `current_llm_task_var` 为结构化任务自动透传 `response_format={"type":"json_object"}`，覆盖 normalizer、evidence_quality、evidence_selector、generate_reasoning、generate 等需要 JSON 解析的调用；该参数也会进入 LLM 缓存 key，避免 JSON/非 JSON 请求共用缓存。如果 OpenAI-compatible 网关明确拒绝 `response_format` 参数，同一模型会去掉该参数重试一次，作为 prompt-only 兼容降级。
 - `debug_metadata.retry_count` 返回实际发生的检索重试次数，不改变 RAG 分支逻辑。
 - `debug_metadata.agentic_router` 是可选字段：intent cache 命中时只标记 `skipped=true` 和 `reason=intent_cache_hit`；Router 执行时记录 `route`、`tool`、`reason`、`confidence`、`skipped` 和 `fallback_to_rag`。顶层 API 字段不因该字段改变。
 - `debug_metadata.trace` 是可选执行快照：记录 intent、Agentic Router 选择、稳定逻辑节点路径、工具摘要和毫秒级耗时，用于前端流程可视化和调试，不改变 RAG 决策、答案生成或顶层 API 字段。
@@ -150,7 +153,7 @@ flowchart TD
 
 在 guardrails 通过后，`AnswerService.generate()` 将请求交给 `PipelineRunner.run()`；Runner 的 `INTENT_CACHE` 未命中后进入 `AGENTIC_ROUTE`。
 
-- `rag_search`：继续现有 `query extract -> retrieve -> assess evidence -> retry -> generate -> verify`。
+- `rag_search`：继续现有 `query extract -> retrieve -> assess evidence -> retry -> generate -> verify`；如果 `ASSESS_EVIDENCE` 因质量评估 LLM 不可用返回 `quality_llm_failed`，编排器不会重复检索，直接进入 `DECIDE`，避免同一批证据上反复执行无效 retrieve/assess。
 - `direct_response`：用于问候和能力说明，直接返回 `PASS`，不检索。
 - `clarify`：信息不足时返回 `ASK_USER` 和追问。
 - `human_handoff`：账号、账单、安全、删除、退款执行等人工处理请求返回 `ESCALATE`。
@@ -242,6 +245,7 @@ flowchart TD
 - 有 QuerySpec 时，`_resolve_queries_from_query_spec()` 优先使用 `keyword_queries[0]` 和 `semantic_queries[0]`；无 QuerySpec 且启用 `query_rewriter_use_llm` 时，调用 `rewrite_for_retrieval()` 生成 keyword/semantic/profile。
 - `retrieval_profile`、`answer_type`、`doc_type_prior`、active hypothesis、hard requirements、required evidence、evidence families 会共同推导 preferred doc types、authoritative/supporting doc types、page_kind/product_family hints、fetch_n、rerank_k 和 budget_hint。
 - pricing/policy/troubleshooting profile 会提高 fetch/rerank 预算；pricing 会额外倾向包含 `tos`。
+- `evidence_selector` 即使启用 `evidence_selector_use_llm`，也只在高价值覆盖场景调用 LLM：hard requirements、多个 required evidence、中高风险或复杂 answer_shape。`policy` / `exact` 只有在不是低风险单弱证据 direct_lookup 时才触发；这是因为 normalizer 会把大量简单 FAQ 标成 `policy + exact + policy_language`。无 required evidence、单个弱 required evidence、低风险 direct_lookup 等普通检索直接使用 rerank/top-k 加结构化文档重平衡。`retrieval_stats.evidence_selector` 会记录 `used_llm`、`skip_reason` 或 `trigger_reason`，用于评测统计 selector 是否被收窄。
 
 ## 函数级生成与校验链路
 
@@ -251,19 +255,29 @@ flowchart TD
   B --> C["prior citation injection 可选"]
   C --> D["build_answer_plan()"]
   D --> E["format_evidence_for_prompt()"]
-  E --> F["_run_reasoning_prepass() 可选"]
-  F --> G["get_system_prompt() + format_answer_plan_instruction()"]
-  G --> H["LLMGateway.chat()"]
-  H --> I["parse_llm_response()"]
-  I --> J["apply_answer_plan()"]
-  J --> K["self_critic.critique() 可选"]
-  K --> L["必要时 generate_regenerate"]
-  L --> M["PhaseResult(answer, citations, followup, confidence, generated_decision)"]
-  M --> N["execute_verify()"]
-  N --> O["ReviewerGate.review()"]
-  O --> P["Orchestrator._apply_result(VERIFY)"]
-  P --> Q["output_builder.build_output()"]
+  E --> F{"简单直答 fast-path?"}
+  F -->|是| G["跳过 generate_reasoning，记录 reasoning_prepass.skipped"]
+  F -->|否| H["_run_reasoning_prepass() 可选"]
+  G --> I["get_system_prompt() + format_answer_plan_instruction()"]
+  H --> I
+  I --> J["LLMGateway.chat()"]
+  J --> K["parse_llm_response()"]
+  K --> L["apply_answer_plan()"]
+  L --> M["self_critic.critique() 可选"]
+  M --> N["必要时 generate_regenerate"]
+  N --> O["PhaseResult(answer, citations, followup, confidence, generated_decision)"]
+  O --> P["execute_verify()"]
+  P --> Q["ReviewerGate.review()"]
+  Q --> R["Orchestrator._apply_result(VERIFY)"]
+  R --> S["output_builder.build_output()"]
 ```
+
+### 生成阶段 reasoning prepass fast-path
+- `generate_reasoning` 默认仍开启，但简单直答场景可跳过预推理，避免每条低风险 FAQ 多一次 LLM 调用。
+- 跳过条件要求：evidence quality 已通过、缺失信号为空、证据 chunk 数不超过 `generate_reasoning_fastpath_max_evidence_chunks`、无会话上下文依赖、风险等级不是 medium/high、answer_shape 为 `direct_lookup` / `short_answer` / `yes_no`，且无 hard requirements。
+- pricing、direct_link、account、高风险、多方案/比较、会话上下文相关或 evidence quality 未通过的 case 继续执行 `generate_reasoning`；低风险 policy FAQ 如果满足简单直答条件，可以走 fast-path。
+- `debug_metadata.reasoning_prepass` 会记录 `{skipped, reason}`，用于离线评测统计 `generate_reasoning` 是否因 fast-path 被省略。
+- 配置开关：`generate_reasoning_skip_simple_lookup=false` 可关闭该 fast-path，恢复原有预推理路径。
 
 ### Reviewer 失败后的状态机已确认
 - `PASS`：进入 `DONE`。
@@ -271,7 +285,23 @@ flowchart TD
 - `DOWNGRADE_LANE`：如有 `trimmed_answer`，替换答案并降级 lane 后进入 `DONE`。
 - `ESCALATE`：进入 `ESCALATE` 输出。
 - `ASK_USER`：如果 `targeted_retry_enabled`、仍可重试、未用过 verify targeted retry、`retry_reason` 属于 `type_mismatch` / `overclaim` / `unsupported_exact` 且有 `suggested_queries`，则设置 `retry_query_override` 并回到 `RETRY_RETRIEVE`；否则进入 `ASK_USER` 输出。
+- `ASSESS_EVIDENCE` 失败但 `missing_signals` 包含 `quality_llm_failed` 时，视为质量评估基础设施不可用，而不是证据缺失；该场景不触发 `RETRY_RETRIEVE`。
 - 任一 phase 抛异常时，`PipelineRunner` 捕获后通过 `build_output(ESCALATE)` 结束。
+
+### Retry 收敛规则
+
+`should_stop_retry()` 在每次 `ASSESS_EVIDENCE` 后检查以下条件，任一满足即停止重试并设置 `convergence_reason`：
+
+1. **信号稳定**：最近两轮 `missing_signals` 完全相同且 `source_set_changed=False`，重试不会带来新证据。→ `same_missing_signals_no_new_sources`
+2. **来源饱和**：`source_set_changed=False`（来源集合未变化），重试已饱和。→ `source_set_unchanged_retry_saturated`
+3. **已覆盖预期类型**：top-5 evidence chunks 已覆盖 QuerySpec 的 `doc_type_prior` 中所有 expected doc types。→ `top_sources_cover_expected`
+4. **基础设施连续失败**：最近两轮均为 infrastructure failure（selector/quality LLM）。→ `consecutive_infrastructure_failures`
+5. **质量门连续失败**：最近 N 轮（默认 3）gate 均未通过。→ `consecutive_gate_failures_exhausted`
+6. **软矛盾**：LLM 返回 `gate_pass=True` 但 code override 强制 `gate_pass=False`，连续 2 轮。→ `soft_contradiction_llm_agrees_evidence_sufficient`
+
+**硬上限**：`max_attempts = max(1, configured_max_retrieval_attempts)`，配置值即硬上限。达到上限且 gate 仍未通过时设置 `max_retries_exhausted`。
+
+**early_output 终态回写**：PipelineRunner 返回 early_output 前，将 `termination_reason` 和 `stage_reasons` 回写到 `debug` dict，确保下游（评测、遥测）可见。
 
 ## 关键组件
 - `AnswerService`：稳定 API 薄包装，仅委托 `PipelineRunner.run()`。

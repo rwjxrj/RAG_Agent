@@ -122,7 +122,10 @@ Return JSON:
         {"role": "user", "content": user_msg},
     ]
 
-    response = await gateway.chat(messages, temperature=0.2, model=model)
+    from app.core.tracing import llm_task_context
+
+    with llm_task_context("branding_auto_generator"):
+        response = await gateway.chat(messages, temperature=0.2, model=model)
     raw = (response.content or "").strip()
 
     # Extract JSON (handle markdown code blocks)

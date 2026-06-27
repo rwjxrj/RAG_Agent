@@ -621,6 +621,66 @@ async def test_normalize_no_skip_for_questions(mock_get_gateway):
     assert not spec.skip_retrieval
 
 
+def test_has_substantive_query_signal_positive():
+    """Queries with substantive signals should be detected."""
+    from app.services.normalizer import _has_substantive_query_signal
+
+    # Customer service capability
+    assert _has_substantive_query_signal("客服能帮我挑一个合适的方案吗")
+    assert _has_substantive_query_signal("客服可以推荐一下吗")
+    # Product selection
+    assert _has_substantive_query_signal("帮我选一个VPS")
+    assert _has_substantive_query_signal("帮我挑一个性价比高的")
+    # Suitability/fitness
+    assert _has_substantive_query_signal("这个配置适不适合我的业务")
+    assert _has_substantive_query_signal("合不合适做Web服务器")
+    # Policy terms
+    assert _has_substantive_query_signal("退款怎么操作")
+    assert _has_substantive_query_signal("售后保修多久")
+    # Recommendation
+    assert _has_substantive_query_signal("推荐一个入门方案")
+    assert _has_substantive_query_signal("哪个适合小团队用")
+
+
+def test_has_substantive_query_signal_negative():
+    """Greetings and chitchat should NOT be flagged as substantive."""
+    from app.services.normalizer import _has_substantive_query_signal
+
+    assert not _has_substantive_query_signal("你好")
+    assert not _has_substantive_query_signal("谢谢")
+    assert not _has_substantive_query_signal("再见")
+    assert not _has_substantive_query_signal("你是谁")
+    assert not _has_substantive_query_signal("hello")
+
+
+@patch("app.services.normalizer.get_llm_gateway")
+@pytest.mark.asyncio
+async def test_normalize_skip_retrieval_guard_overrides_llm(mock_get_gateway):
+    """When LLM returns skip_retrieval=True for a substantive query, guard overrides it.
+    This catches EVAL-002 where '客服能帮我挑吗' was misclassified as chitchat."""
+    mock_gateway = MagicMock()
+    mock_gateway.chat = AsyncMock(
+        return_value=_mock_llm_response({
+            "canonical_query_en": "can customer service help me pick?",
+            "intent": "social",
+            "entities": [],
+            "required_evidence": [],
+            "risk_level": "low",
+            "is_ambiguous": False,
+            "clarifying_questions": [],
+            "skip_retrieval": True,
+            "out_of_scope": True,
+            "canned_response": "我可以帮助你查询相关问题。",
+        })
+    )
+    mock_get_gateway.return_value = mock_gateway
+
+    spec = await normalize("风衣适不适合面试，客服能帮我挑吗")
+    # Guard should override skip_retrieval despite LLM saying True
+    assert not spec.skip_retrieval
+    assert not spec.out_of_scope
+
+
 @patch("app.services.normalizer.get_llm_gateway")
 @pytest.mark.asyncio
 async def test_normalize_llm_fallback_on_error(mock_get_gateway):

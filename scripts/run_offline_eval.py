@@ -55,12 +55,25 @@ async def _run(args: argparse.Namespace) -> int:
         )
 
     service = None if args.use_recorded_output else AnswerService()
-    summary, results = await run_offline_eval(
-        service,
-        cases,
-        run_id=run_id,
-        use_recorded_output=args.use_recorded_output,
-    )
+
+    # Apply eval-only source_url prefix filter if requested.
+    filter_token = None
+    if args.source_url_prefix:
+        from app.services.retrieval import set_source_url_filter
+        filter_token = set_source_url_filter(args.source_url_prefix)
+        print(f"[info] source_url filter active: prefix={args.source_url_prefix!r}")
+
+    try:
+        summary, results = await run_offline_eval(
+            service,
+            cases,
+            run_id=run_id,
+            use_recorded_output=args.use_recorded_output,
+        )
+    finally:
+        if filter_token is not None:
+            from app.services.retrieval import reset_source_url_filter
+            reset_source_url_filter(filter_token)
 
     dump_eval_run_json(output_json, summary, results)
     dump_eval_run_markdown(output_md, summary, results)
@@ -156,6 +169,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Fail if faq_returned_for_link_lookup rate exceeds this threshold",
+    )
+    parser.add_argument(
+        "--source-url-prefix",
+        default=None,
+        help=(
+            "Eval-only: only keep retrieval results whose source_url starts with this prefix. "
+            "Example: eval://retrieval/ to isolate benchmark corpus from old business docs."
+        ),
     )
     return parser
 

@@ -37,19 +37,19 @@ Rules:
 """
 
     try:
-        from app.core.tracing import current_llm_task_var
-        current_llm_task_var.set("doc_type_router")
+        from app.core.tracing import llm_task_context
         llm = get_llm_gateway()
         model = get_model_for_task("doc_type_classifier")
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": query[:500]},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=64,
-        )
+        with llm_task_context("doc_type_router"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": query[:500]},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=64,
+            )
         text = (resp.content or "").strip()
         if "```json" in text:
             match = re.search(r"```json\s*([\s\S]*?)\s*```", text)

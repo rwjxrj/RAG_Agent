@@ -86,6 +86,24 @@ def _build_fail_report(hard_requirements: list[str] | None) -> QualityReport:
     )
 
 
+def _build_quality_llm_failure_report(hard_requirements: list[str] | None) -> QualityReport:
+    hard_reqs = list(dict.fromkeys(hard_requirements or []))
+    hard_coverage = {req: False for req in hard_reqs}
+    return QualityReport(
+        quality_score=0.0,
+        feature_scores={},
+        missing_signals=["quality_llm_failed"],
+        staleness_risk=None,
+        boilerplate_risk=None,
+        sufficiency_scores=None,
+        hard_requirement_coverage=hard_coverage,
+        completeness_score=0.0,
+        actionability_score=0.0,
+        gate_pass=False,
+        reason="LLM quality assessment failed.",
+    )
+
+
 def _extract_probable_json(text: str) -> str:
     s = (text or "").strip()
 
@@ -186,23 +204,23 @@ async def evaluate_quality(
         user_content += "\n\nAssessment context: " + json.dumps(context, ensure_ascii=False)
 
     try:
-        from app.core.tracing import current_llm_task_var
+        from app.core.tracing import llm_task_context
         from app.services.llm_gateway import get_llm_gateway
         from app.services.model_router import get_model_for_task
 
-        current_llm_task_var.set("evidence_quality")
         llm = get_llm_gateway()
         model = get_model_for_task("evidence_quality")
 
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": EVIDENCE_QUALITY_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=320,
-        )
+        with llm_task_context("evidence_quality"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": EVIDENCE_QUALITY_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=320,
+            )
 
         raw = (resp.content or "").strip()
         text = _extract_probable_json(raw)
@@ -256,7 +274,7 @@ async def evaluate_quality(
 
     except Exception as e:
         logger.warning("evidence_quality_llm_failed", error=str(e), query=(query or "")[:80])
-        return _build_fail_report(hard_reqs)
+        return _build_quality_llm_failure_report(hard_reqs)
 
 
 def passes_quality_gate(
@@ -268,7 +286,9 @@ def passes_quality_gate(
     """
     PASS behavior:
     - If gate disabled => True
-    - Else enforce hard requirements from LLM coverage and use LLM pass/fail as primary
+    - Enforce hard requirements from report coverage (regardless of param)
+    - Use LLM pass/fail as primary signal with hard_ok guard
+    - Contradiction guard: gate_pass=True + missing_signals non-empty => False
     """
     _ = required_evidence
     _ = thresholds
@@ -281,12 +301,24 @@ def passes_quality_gate(
     hard_cov = report.hard_requirement_coverage or {}
     hard_ok = all(hard_cov.get(req) is True for req in hard_reqs) if hard_reqs else True
 
-    if report.gate_pass is not None:
-        if report.gate_pass and not hard_cov and hard_reqs:
-            return True
-        return bool(report.gate_pass) and hard_ok
+    # Safety check: if report's own hard_requirement_coverage has ANY False entry,
+    # the LLM itself identified uncovered hard requirements. Force gate fail.
+    # This catches the scenario where hard_requirements param is empty (upstream
+    # bridge gap) but the LLM still evaluated coverage and found gaps (EVAL-005).
+    if hard_cov and any(v is not True for v in hard_cov.values()):
+        report_hard_ok = False
+    else:
+        report_hard_ok = True
 
-    if hard_reqs and hard_ok:
+    if report.gate_pass is not None:
+        # Contradiction guard: LLM says sufficient but also lists missing signals.
+        # The LLM contradicted itself — trust the gaps, not the pass verdict.
+        missing = report.missing_signals or []
+        if report.gate_pass and missing:
+            return False
+        return bool(report.gate_pass) and hard_ok and report_hard_ok
+
+    if hard_reqs and hard_ok and report_hard_ok:
         return True
 
     agg_thresh = getattr(settings, "evidence_quality_threshold", 0.6)
@@ -296,4 +328,4 @@ def passes_quality_gate(
         report.completeness_score is None
         or float(report.completeness_score) >= min_completeness
     )
-    return conf_ok and hard_ok and completeness_ok
+    return conf_ok and hard_ok and report_hard_ok and completeness_ok

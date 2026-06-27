@@ -138,18 +138,18 @@ async def execute_relevance_check(
     )
 
     try:
-        from app.core.tracing import current_llm_task_var
+        from app.core.tracing import llm_task_context
 
-        current_llm_task_var.set("conversation_relevance_check")
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": "Return only valid JSON. No markdown."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=150,
-        )
+        with llm_task_context("conversation_relevance_check"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": "Return only valid JSON. No markdown."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=150,
+            )
         content = getattr(resp, "content", "") or ""
         result = _parse_relevance_response(content)
         if result:

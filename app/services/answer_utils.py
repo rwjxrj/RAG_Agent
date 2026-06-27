@@ -42,6 +42,7 @@ _ADVICE_FACT_LIKE_PATTERN = re.compile(
 )
 _ADVICE_ENTITY_TOKEN_PATTERN = re.compile(r"\b[A-Z][A-Z0-9-]{2,}\b")
 _DEFAULT_ADVICE_LABEL = "My recommendation:"
+_ALLOWED_ANSWER_MODES = {"PASS_EXACT", "PASS_PARTIAL", "ASK_USER"}
 
 
 def _sanitize_raw_citations(answer: str) -> str:

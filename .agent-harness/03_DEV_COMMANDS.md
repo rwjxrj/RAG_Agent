@@ -38,12 +38,14 @@ make ingest
 make ingest-dry
 python scripts/ingest_from_source.py
 python scripts/ingest_from_source.py --dry-run
+python scripts/ingest_from_source.py --files retrieval_benchmark_v1.json --force-reindex
 python scripts/ingest_tickets_from_source.py
 ```
 
 注意：
 - `make ingest` 会从 `source/` 入库，可能写 PostgreSQL、OpenSearch、Qdrant。
 - 优先用 dry run 或只读检查确认源文件格式。
+- 对已入库但需要刷新 chunk 索引元数据的单文件基准集，可使用 `--force-reindex` 重建该文件对应文档的 OpenSearch/Qdrant 索引。
 - `ingest_tickets_from_source.py` 读取 sample conversations，具体写入路径待代码确认。
 
 ## WHMCS 工单导入和抓取
@@ -102,6 +104,32 @@ python scripts/run_offline_eval.py
 注意：
 - 调试脚本可能依赖服务和数据状态，运行前先读脚本开头和参数。
 - offline eval 可能消耗 LLM token，执行前确认。
+
+### 无泄漏检索能力评测
+
+先将 AI 生成的 `knowledge_base.json` 保存为 `source/retrieval_benchmark_v1.json` 并按既有入库流程导入；`eval_cases.json` 必须保存在 `source/` 之外。入库会写 PostgreSQL、OpenSearch 和 Qdrant，执行前必须确认目标环境。
+
+```powershell
+python .scratch/resume-eval/run_resume_eval.py `
+  --dataset-json artifacts/offline_eval/datasets/eval_cases_v1.json `
+  --limit 100 `
+  --case-timeout 180 `
+  --case-delay 0.5 `
+  --output-json artifacts/offline_eval/retrieval-baseline-100.json `
+  --output-md artifacts/offline_eval/retrieval-baseline-100.md
+```
+
+报告版本 2.0，输出包含：
+- Benchmark 有效性（valid/invalid、invalidation_reasons）
+- 分层指标（all_cases、retrieval_executed、route_short_circuited、invalid_cases）
+- 路由汇总、召回分组、延迟分组
+- LLM 轻量统计（默认不含 prompt/response，含 429 rate-limited 计数）
+- Retry 收敛诊断（含 exhaustion_reason）
+- 自动诊断包 `*-diagnosis.json`
+
+退出码：0=有效，2=无效（报告仍写出）。
+
+启用完整 LLM prompt/response 追踪：加 `--capture-llm-calls`（仅建议对少量目标用例使用）。
 
 ## 文档-only 变更验证
 

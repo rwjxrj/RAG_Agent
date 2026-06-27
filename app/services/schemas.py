@@ -163,6 +163,7 @@ class QuerySpec:
     rewrite_candidates: list[str] | None = None  # Fallback rewritten queries for retrieval retry
     answer_mode_hint: str = "strong"  # strong | weak | ask_user
     extraction_mode: str = "rule_primary"  # llm_primary | rule_primary | rule_fallback
+    fastpath_rule: str | None = None  # Name of the normalizer fast-path rule that matched (e.g. "service_hours")
     config_overrides_applied: list[str] | None = None  # Enabled normalizer compatibility switches
 
     # --- Sub-object accessors (populated in __post_init__) ---
@@ -257,6 +258,7 @@ class GeneratePhaseOutput:
     self_critic_regenerated: bool = False
     conversation_relevance: dict[str, Any] | None = None
     reasoning_prewrite: dict[str, Any] | None = None
+    reasoning_prepass: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -278,6 +280,7 @@ class OrchestratorDebug:
     error: str | None = None
     candidate_render_applied: bool = False
     final_polish_applied: bool = False
+    convergence_reason: str | None = None
 
 
 @dataclass

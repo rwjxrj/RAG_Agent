@@ -725,3 +725,113 @@ async def test_retrieve_relaxes_metadata_filters_when_search_returns_empty(monke
     assert len(opensearch.calls) >= 2
     assert opensearch.calls[0]["product_families"] == ["windows_vps"]
     assert opensearch.calls[1]["product_families"] == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 Issue 2: evidence_selector diagnostic fields
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_evidence_selector_stats_includes_diagnostic_fields(monkeypatch):
+    """stats['evidence_selector'] includes required_evidence, hard_requirements,
+    answer_type, answer_shape, risk_level when selector runs."""
+
+    class FakeOpenSearch:
+        async def search(self, query, *, top_n=50, doc_types=None, boost_pricing=False, prefer_snippet=False):
+            return [SearchChunk("c1", "d1", "Refund within 3 days.", "url1", "policy", 0.9)]
+
+    class FakeQdrant:
+        def search(self, *, vector, top_n=50, doc_types=None):
+            return [SearchChunk("c2", "d2", "Refund FAQ.", "url2", "faq", 0.8)]
+
+    class FakeEmbedder:
+        async def embed(self, texts):
+            return [[0.1, 0.2, 0.3]]
+
+    class FakeReranker:
+        async def rerank(self, query, chunks, top_k):
+            ranked = sorted(chunks, key=lambda c: c.score, reverse=True)
+            return [(c, c.score) for c in ranked[:top_k]]
+
+    # Mock selection result
+    from collections import namedtuple
+    MockSelection = namedtuple(
+        "MockSelection",
+        ["selected", "used_llm", "coverage_map", "uncovered_requirements",
+         "reasoning", "skip_reason", "trigger_reason"],
+    )
+    mock_selection = MockSelection(
+        selected=[(SearchChunk("c1", "d1", "Refund within 3 days.", "url1", "policy", 0.9), 0.9)],
+        used_llm=True,
+        coverage_map={"policy": "c1"},
+        uncovered_requirements=[],
+        reasoning="all requirements covered",
+        skip_reason=None,
+        trigger_reason="hard_requirements_present",
+    )
+
+    async def fake_select(*args, **kwargs):
+        return mock_selection
+
+    monkeypatch.setattr(
+        "app.services.evidence_selector.select_evidence_for_query", fake_select,
+    )
+
+    svc = RetrievalService(
+        opensearch=FakeOpenSearch(),
+        qdrant=FakeQdrant(),
+        embedding_provider=FakeEmbedder(),
+        reranker=FakeReranker(),
+    )
+    monkeypatch.setattr(
+        svc,
+        "_settings",
+        type("S", (), {
+            "retrieval_top_n": 50,
+            "retrieval_top_k": 8,
+            "retrieval_fusion": "simple",
+            "retrieval_rrf_k": 60,
+            "retrieval_plans_extra_chunks": 4,
+            "retrieval_ensure_doc_type_min": 0,
+            "evidence_selector_use_llm": True,
+            "evidence_selector_fallback_top_k": 8,
+        })(),
+    )
+
+    spec = QuerySpec(
+        intent="informational",
+        entities=[],
+        constraints={},
+        required_evidence=["refund_policy"],
+        risk_level="low",
+        keyword_queries=["refund query"],
+        semantic_queries=["refund query"],
+        clarifying_questions=[],
+        hard_requirements=["policy_language"],
+        answer_type="pricing",
+        answer_shape="direct_lookup",
+    )
+    plan = RetrievalPlan(
+        profile="generic",
+        attempt_index=1,
+        reason="test",
+        query_keyword="refund",
+        query_semantic="refund",
+        preferred_doc_types=["policy"],
+        fetch_n=10,
+        rerank_k=4,
+        budget_hint={"hard_requirements": ["policy_language"]},
+    )
+
+    pack = await svc.retrieve("refund policy", query_spec=spec, retrieval_plan=plan)
+
+    es_stats = pack.retrieval_stats.get("evidence_selector", {})
+    assert es_stats["required_evidence"] == ["refund_policy"]
+    assert es_stats["hard_requirements"] == ["policy_language"]
+    assert es_stats["answer_type"] == "pricing"
+    assert es_stats["answer_shape"] == "direct_lookup"
+    assert es_stats["risk_level"] == "low"
+    # Verify existing fields still present
+    assert es_stats["used_llm"] is True
+    assert es_stats["trigger_reason"] == "hard_requirements_present"

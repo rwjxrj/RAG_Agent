@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from typing import Any
 
 from app.core.config import get_settings
@@ -238,6 +239,30 @@ NORMALIZER_SYSTEM_PROMPT = (
     + "- required_evidence / hard_requirements / soft_requirements: use only standard evidence types: policy_language, numbers_units, transaction_link, steps_structure, has_any_url.\n"
     + "- Do not invent ad-hoc evidence types such as 'promo plan details' or product-specific labels.\n"
 )
+
+# ---------------------------------------------------------------------------
+# skip_retrieval 后置校验：以下模式表示用户有实质性信息需求，
+# 即使 LLM 返回 skip_retrieval=True 或 out_of_scope=True 也必须走检索。
+# 覆盖：客服能力/导购/政策边界/产品适配/选择建议类问题 (EVAL-002)
+# ---------------------------------------------------------------------------
+_SKIP_RETRIEVAL_GUARD_PATTERNS = [
+    re.compile(r"客服.{0,6}(?:帮|选|挑|推荐|建议|能|可以|怎么)"),
+    re.compile(r"(?:帮|替)(?:我|用户|客户).{0,4}(?:选|挑|推荐|看|找|搭配)"),
+    re.compile(r"(?:能不能|可以吗|适不适合|合不合适|行不行|好不好|对不对)"),
+    re.compile(r"(?:退款|退换|保修|运费|配送|售后|换货|退货)"),
+    re.compile(r"(?:怎么(?:选|挑|买|用|配|操作|设置|安装))"),
+    re.compile(r"(?:推荐|建议|适合|合适|哪个好|哪个适合|哪种)"),
+]
+
+
+def _has_substantive_query_signal(query: str) -> bool:
+    """Check if query contains patterns that indicate a real information need.
+
+    Used as post-validation guard to prevent skip_retrieval for queries like
+    '客服能帮我挑吗' or '适不适合面试' that the LLM might misclassify as chitchat.
+    """
+    q = query.strip()
+    return any(p.search(q) for p in _SKIP_RETRIEVAL_GUARD_PATTERNS)
 
 
 def _get_greeting_response() -> str:
@@ -900,19 +925,19 @@ async def _normalize_llm(
     user_content = "\n\n".join(user_parts).strip()
 
     try:
-        from app.core.tracing import current_llm_task_var
+        from app.core.tracing import llm_task_context
 
-        current_llm_task_var.set("normalizer")
         llm = get_llm_gateway()
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": NORMALIZER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=512,
-        )
+        with llm_task_context("normalizer"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": NORMALIZER_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=512,
+            )
 
         raw = (resp.content or "").strip()
         payload = json.loads(_extract_probable_json(raw))
@@ -963,6 +988,20 @@ async def _normalize_llm(
 
         out_of_scope = _as_bool(payload.get("out_of_scope"), False)
         skip_retrieval = _as_bool(payload.get("skip_retrieval"), False) or out_of_scope
+
+        # Post-validation guard: queries with substantive information needs
+        # must go through retrieval even if LLM misclassifies them as chitchat/OOS.
+        # This catches EVAL-002 type queries like "客服能帮我挑吗" or "适不适合面试".
+        if skip_retrieval and _has_substantive_query_signal(query):
+            logger.info(
+                "skip_retrieval_guard_override",
+                query=query[:80],
+                original_skip=True,
+                original_out_of_scope=out_of_scope,
+            )
+            skip_retrieval = False
+            out_of_scope = False
+
         canned_response = _as_str(payload.get("canned_response"))
         if skip_retrieval and not canned_response:
             canned_response = _get_out_of_scope_response() if out_of_scope else _get_greeting_response()
@@ -1269,9 +1308,23 @@ async def normalize(
     locale: str | None = None,
     source_lang: str | None = None,
 ) -> QuerySpec:
-    """Produce QuerySpec from raw query. LLM-led; minimal fallback on error."""
+    """Produce QuerySpec from raw query. Fast-path first, then LLM-led; minimal fallback on error."""
     q = (query or "").strip()
     settings = get_settings()
+
+    # Fast-path: deterministic rules for high-confidence FAQ patterns
+    if bool(getattr(settings, "normalizer_fastpath_enabled", True)) and not conversation_history:
+        from app.services.normalizer_fastpath import try_fastpath
+        fastpath_result = try_fastpath(q)
+        if fastpath_result is not None:
+            spec, rule_name = fastpath_result
+            logger.info(
+                "normalizer_fastpath",
+                rule=rule_name,
+                query_preview=q[:80],
+            )
+            return spec
+
     try:
         configured_max_attempts = getattr(settings, "normalizer_llm_max_attempts", None)
         if configured_max_attempts in (None, ""):

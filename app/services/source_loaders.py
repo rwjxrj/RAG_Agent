@@ -78,7 +78,7 @@ def _with_taxonomy_metadata(
 
 def load_pages_json(path: Path, doc_type_override: str | None = None) -> list[dict[str, Any]]:
     """Load JSON with pages array: [{url, title, text}]. Used by sample_docs.json and {doc_type}.json."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     docs = []
     for p in data.get("pages", []):
@@ -108,7 +108,7 @@ def load_pages_json(path: Path, doc_type_override: str | None = None) -> list[di
 
 def load_articles_json(path: Path) -> list[dict[str, Any]]:
     """Load JSON with articles array: [{url, title, snippet}]."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     docs = []
     for a in data.get("articles", []):
@@ -138,7 +138,7 @@ def load_articles_json(path: Path) -> list[dict[str, Any]]:
 
 def load_plans_json(path: Path) -> list[dict[str, Any]]:
     """Load JSON with plans array: [{plan_name, price_raw, ram, cpu, ...}]."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     docs = []
     default_category = str(data.get("category") or "Plans").strip() or "Plans"
@@ -185,7 +185,7 @@ def load_plans_json(path: Path) -> list[dict[str, Any]]:
 
 def load_sales_kb_json(path: Path) -> list[dict[str, Any]]:
     """Load JSON with datasets.sales_knowledge.product_categories."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     docs = []
     sales = data.get("datasets", {}).get("sales_knowledge", {})
@@ -288,6 +288,7 @@ LOADERS: dict[str, Any] = {
     "howto.json": load_pages_json,
     "sample_conversations.json": load_sample_conversations_json,
     "tickets.json": load_sample_conversations_json,  # backward compat
+    "retrieval_benchmark_v1.json": load_pages_json,
 }
 
 

@@ -86,6 +86,16 @@ async def execute_retrieve(
     evidence = evidence_pack.chunks
 
     stats = evidence_pack.retrieval_stats or {}
+
+    # Bridge evidence_selector stats into retry_strategy_applied for retry diagnostics (Issue 4).
+    # assess.py _record_retry_diagnostics reads these from retry_strategy_applied.
+    es_stats = stats.get("evidence_selector")
+    if es_stats and isinstance(es_stats, dict):
+        ctx.retrieve_output.retry_strategy_applied["evidence_selector_used_llm"] = es_stats.get("used_llm")
+        ctx.retrieve_output.retry_strategy_applied["evidence_selector_skip_reason"] = es_stats.get("skip_reason")
+        ctx.retrieve_output.retry_strategy_applied["evidence_selector_trigger_reason"] = es_stats.get("trigger_reason")
+        ctx.retrieve_output.retry_strategy_applied["evidence_selector_llm_failed"] = es_stats.get("llm_failed", False)
+
     _pipeline_log(
         "retrieve", "done",
         chunks=len(evidence),

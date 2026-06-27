@@ -54,20 +54,20 @@ async def classify_doc_type(url: str, title: str, content: str) -> str:
     user_content = f"URL: {url}\nTitle: {title}\n\nContent:\n{content_preview}"
 
     try:
-        from app.core.tracing import current_llm_task_var
-        current_llm_task_var.set("doc_type_classifier")
+        from app.core.tracing import llm_task_context
         llm = get_llm_gateway()
         model = get_model_for_task("doc_type_classifier")
         prompt = _build_classifier_prompt()
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=32,
-        )
+        with llm_task_context("doc_type_classifier"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=32,
+            )
         text = (resp.content or "").strip()
         if "```json" in text:
             match = re.search(r"```json\s*([\s\S]*?)\s*```", text)

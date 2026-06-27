@@ -29,6 +29,7 @@
 - [常用命令](#常用命令)
 - [项目结构](#项目结构)
 - [测试与验证](#测试与验证)
+- [检索评测与性能基线](#检索评测与性能基线)
 - [故障排查](#故障排查)
 
 ## 系统架构
@@ -530,6 +531,99 @@ npm run build
 ```
 
 文档-only 修改通常不需要启动服务；检查 Markdown 文件存在、标题结构和关键路径即可。
+
+## 检索评测与性能基线
+
+项目使用 `.scratch/resume-eval/run_resume_eval.py` 评估真实 RAG 查询链路。报告版本 2.0，包含：
+
+- **Benchmark 有效性**：区分业务有效/无效 case，无效原因分类（generation_failure、generic_error_answer、missing_termination 等）
+- **分层指标**：all_cases、retrieval_executed、route_short_circuited、invalid_cases 各有独立 denominator
+- **路由汇总**：RAG search、clarification、human_handoff、direct_response 计数
+- **召回分组**：full_recall、partial_recall、zero_recall 计数
+- **延迟分组**：no_retry、retried、max_retry 分组 P50/P95/P99
+- **LLM 轻量统计**：默认采集 task/model/attempt/duration/status（含 429 rate-limited），不含 prompt/response
+- **Retry 收敛诊断**：含 exhaustion_reason（达到上限时非空）
+- **自动诊断包**：`*-diagnosis.json` 自动生成，包含失败、慢查询、重试和召回缺口
+
+### 退出码语义
+
+- `0`：Benchmark 有效（所有 case 业务有效）
+- `2`：Benchmark 无效（存在业务无效 case），报告仍会写出以便诊断
+
+### 运行 100 条冷启动评测
+
+以下命令适用于 Windows PowerShell。完整控制台日志单独落盘，终端最后只读取结构化汇总：
+
+```powershell
+cd D:\ai_project\RAG_Search
+
+# 清理 LLM 缓存，确保本轮为真实冷启动
+docker-compose exec -T api python -c "import asyncio; from app.services.llm_gateway import clear_llm_cache; print(asyncio.run(clear_llm_cache()))"
+
+# 100 条评测；--case-delay 防止连续调用压垮模型网关
+docker-compose exec -T api python .scratch/resume-eval/run_resume_eval.py `
+  --dataset-json artifacts/offline_eval/datasets/eval_cases_v1.json `
+  --limit 100 `
+  --source-url-prefix eval://retrieval/ `
+  --case-timeout 180 `
+  --case-delay 0.5 `
+  --output-json /tmp/benchmark-cold-100.json `
+  --output-md /tmp/benchmark-cold-100.md `
+  *> artifacts/offline_eval/benchmark-cold-100-console.log
+
+docker-compose cp api:/tmp/benchmark-cold-100.json artifacts/offline_eval/benchmark-cold-100.json
+docker-compose cp api:/tmp/benchmark-cold-100.md artifacts/offline_eval/benchmark-cold-100.md
+# 诊断包自动生成
+docker-compose cp api:/tmp/benchmark-cold-100-diagnosis.json artifacts/offline_eval/benchmark-cold-100-diagnosis.json
+```
+
+评测结束后输出核心指标：
+
+```powershell
+$data = Get-Content artifacts/offline_eval/benchmark-cold-100.json -Raw | ConvertFrom-Json
+$bv = $data.summary.benchmark_validity
+
+[PSCustomObject]@{
+  BenchmarkValid = $bv.valid
+  InvalidCount   = $bv.invalid_count
+  InvalidReasons = ($bv.invalidation_reasons | ConvertTo-Json -Compress)
+  Cases          = $data.summary.dataset_cases
+  ValidCases     = $data.summary.successful_cases
+  RecallAt5      = $data.summary.retrieval_quality.recall_at_5
+  HitAt5         = $data.summary.retrieval_quality.hit_at_5
+  MRR            = $data.summary.retrieval_quality.mrr
+  TotalP50       = $data.summary.latency_seconds.p50
+  TotalP95       = $data.summary.latency_seconds.p95
+  NoRetryP95     = $data.summary.latency_groups.no_retry.p95
+  RetriedP95     = $data.summary.latency_groups.retried.p95
+} | Format-List
+```
+
+### CLI 参数
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--limit` | 36 | 最大评测条数 |
+| `--case-timeout` | 180 | 单条超时秒数 |
+| `--case-delay` | 0.5 | case 间隔秒数，防止 429 |
+| `--dataset-json` | 无 | 外部评测集 JSON 路径 |
+| `--source-url-prefix` | 无 | 限定检索 source 前缀 |
+| `--capture-llm-calls` | false | 启用完整 LLM prompt/response 追踪 |
+| `--output-json` | 必填 | JSON 输出路径 |
+| `--output-md` | 必填 | Markdown 输出路径 |
+
+### 诊断包
+
+评测完成后自动在 JSON 报告旁生成 `*-diagnosis.json`，包含：
+
+- `summary`：核心指标摘要
+- `invalid_cases`：无效 case 列表及失败类别
+- `route_short_circuited`：路由短路 case
+- `recall_failures`：零/部分召回 case（含预期与实际 source）
+- `slowest_cases`：最慢 10 条及分阶段耗时
+- `retried_cases`：重试 case 及收敛原因
+
+诊断包不含 prompt、response 或完整证据文本，可直接交给 AI 分析。
 
 ## 故障排查
 

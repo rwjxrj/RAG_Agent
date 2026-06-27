@@ -49,12 +49,44 @@ def test_passes_quality_gate_no_required():
 
 
 def test_passes_quality_gate_uses_gate_pass_when_set():
-    """When report.gate_pass is set, passes_quality_gate uses it directly."""
-    report_pass = QualityReport(0.3, {}, ["missing_numbers"], None, 0.5, gate_pass=True)
+    """When report.gate_pass is set and no contradictions, passes_quality_gate uses it."""
+    report_pass = QualityReport(
+        0.3, {}, [], None, 0.5,
+        gate_pass=True,
+        hard_requirement_coverage={"numbers_units": True},
+    )
     assert passes_quality_gate(report_pass, ["numbers_units"], hard_requirements=["numbers_units"])
 
     report_fail = QualityReport(0.8, {"numbers_units": 0.9}, [], None, 0.1, gate_pass=False)
     assert not passes_quality_gate(report_fail, None)
+
+
+def test_passes_quality_gate_contradiction_guard():
+    """gate_pass=True but missing_signals non-empty => LLM contradicted itself => False."""
+    report = QualityReport(0.3, {}, ["missing_numbers"], None, 0.5, gate_pass=True)
+    assert not passes_quality_gate(report, ["numbers_units"], hard_requirements=["numbers_units"])
+
+
+def test_passes_quality_gate_report_hard_coverage_false():
+    """Report hard_requirement_coverage has False entry => gate fails even with empty hard_requirements param.
+    This catches EVAL-005 where active_hard_requirements is empty but LLM reports coverage gaps."""
+    report = QualityReport(
+        0.7, {}, [], None, 0.1,
+        gate_pass=True,
+        hard_requirement_coverage={"policy_language": False},
+    )
+    # Even with no hard_requirements param, the report's own coverage has False
+    assert not passes_quality_gate(report, [])
+
+
+def test_passes_quality_gate_all_coverage_true_passes():
+    """gate_pass=True + all coverage True + no missing signals => gate passes."""
+    report = QualityReport(
+        0.8, {}, [], None, 0.1,
+        gate_pass=True,
+        hard_requirement_coverage={"policy_language": True, "numbers_units": True},
+    )
+    assert passes_quality_gate(report, ["policy_language"], hard_requirements=["policy_language"])
 
 
 def test_passes_quality_gate_uses_hard_coverage_when_gate_pass_none():
@@ -116,6 +148,31 @@ async def test_evaluate_quality_parses_completeness_and_actionability(monkeypatc
     assert report.gate_pass is True
     assert report.completeness_score == 0.72
     assert report.actionability_score == 0.66
+
+
+@pytest.mark.asyncio
+async def test_evaluate_quality_marks_llm_failure_as_quality_unavailable():
+    with patch("app.services.llm_gateway.get_llm_gateway") as mock_gw:
+        mock_gw.return_value.chat = AsyncMock(side_effect=ValueError("LLM returned empty content"))
+        report = await evaluate_quality(
+            "query",
+            [
+                EvidenceChunk(
+                    "c1",
+                    "客服时间是 9:00-18:00。",
+                    "eval://retrieval/doc-001",
+                    "faq",
+                    0.9,
+                    "客服时间是 9:00-18:00。",
+                )
+            ],
+            hard_requirements=["policy_language"],
+        )
+
+    assert report.gate_pass is False
+    assert "quality_llm_failed" in report.missing_signals
+    assert report.reason == "LLM quality assessment failed."
+    assert report.hard_requirement_coverage == {"policy_language": False}
 
 
 def test_plan_retry_attempt_1():

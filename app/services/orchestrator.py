@@ -13,6 +13,7 @@ the next action.
 from dataclasses import dataclass, field
 from enum import Enum
 import time
+import asyncio
 from typing import Any
 
 from app.core.config import get_settings
@@ -147,6 +148,10 @@ class OrchestratorContext:
     early_output: Any = None
     skip_retrieval: bool = False
     agentic_debug: dict[str, Any] = field(default_factory=dict)
+    # Quality gate retry diagnostics (Issue 4)
+    retry_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    previous_source_set: set[str] = field(default_factory=set)
+    previous_missing_signals: list[str] = field(default_factory=list)
 
     def can_retry(self) -> bool:
         """Whether another retrieval attempt is still allowed."""
@@ -342,8 +347,35 @@ class PipelineRunner:
             return OrchestratorAction.ASK_USER
 
         if ctx.state == OrchestratorState.ASSESSING:
-            if not ctx.passes_quality_gate and ctx.can_retry():
+            if (
+                not ctx.passes_quality_gate
+                and ctx.can_retry()
+                and not self._quality_assessment_unavailable(ctx)
+            ):
+                # Retry convergence: stop retrying when it won't help (Issue 4)
+                if self._should_stop_retry(ctx):
+                    logger.info(
+                        "retry_convergence_stop",
+                        trace_id=ctx.trace_id,
+                        retrieval_attempt=ctx.retrieval_attempt,
+                        reason=ctx.orchestrator_debug.convergence_reason if hasattr(ctx.orchestrator_debug, 'convergence_reason') else "unknown",
+                    )
+                    return OrchestratorAction.DECIDE
                 return OrchestratorAction.RETRY_RETRIEVE
+            # Max attempts exhausted without convergence — set exhaustion reason
+            if (
+                not ctx.passes_quality_gate
+                and not ctx.can_retry()
+                and not self._quality_assessment_unavailable(ctx)
+                and ctx.orchestrator_debug.convergence_reason is None
+            ):
+                ctx.orchestrator_debug.convergence_reason = "max_retries_exhausted"
+                logger.info(
+                    "retry_exhausted",
+                    trace_id=ctx.trace_id,
+                    retrieval_attempt=ctx.retrieval_attempt,
+                    max_attempts=ctx.max_attempts,
+                )
             return OrchestratorAction.DECIDE
 
         if ctx.state == OrchestratorState.DECIDING:
@@ -389,6 +421,133 @@ class PipelineRunner:
             return OrchestratorAction.RETRIEVE
 
         return OrchestratorAction.DONE
+
+    @staticmethod
+    def _quality_assessment_unavailable(ctx: OrchestratorContext) -> bool:
+        """Detect quality-gate infrastructure failures that retrieval cannot fix."""
+        report = ctx.quality_report
+        signals = getattr(report, "missing_signals", None) or []
+        reason = str(getattr(report, "reason", "") or "").lower()
+        return "quality_llm_failed" in signals or "quality assessment failed" in reason
+
+    def _should_stop_retry(self, ctx: OrchestratorContext) -> bool:
+        """Determine if retry should be stopped due to convergence (Issue 4).
+
+        Six convergence conditions:
+        1. Same missing_signals as previous attempt AND no new sources found.
+        2. Source set unchanged — retrieval saturated, retrying won't help.
+        3. Top-5 evidence already covers expected source types — retrying won't help.
+        4. Consecutive infrastructure failures — selector/quality LLM keeps failing, retrying won't help.
+        5. Consecutive quality gate failures — quality never passes after N rounds, retrying won't help.
+        5b. Soft contradiction — LLM says pass but code overrides (missing_signals/coverage gap), retrying won't resolve.
+        """
+        if not bool(getattr(self._settings, "quality_gate_retry_convergence_enabled", True)):
+            return False
+
+        if not ctx.retry_diagnostics:
+            return False
+
+        latest = ctx.retry_diagnostics[-1]
+        current_missing = sorted(latest.get("missing_signals", []))
+        source_set_changed = latest.get("source_set_changed")
+
+        # Condition 1: Same missing_signals and no new sources
+        if (
+            current_missing == ctx.previous_missing_signals
+            and source_set_changed is False
+        ):
+            ctx.orchestrator_debug.convergence_reason = "same_missing_signals_no_new_sources"
+            return True
+
+        # Condition 2: Source set unchanged (retrieval saturated)
+        if source_set_changed is False:
+            ctx.orchestrator_debug.convergence_reason = "source_set_unchanged_retry_saturated"
+            return True
+
+        # Condition 3: Top-5 evidence already covers expected source types
+        if self._top_sources_cover_expected(ctx):
+            ctx.orchestrator_debug.convergence_reason = "top_sources_cover_expected"
+            return True
+
+        # Condition 4: Consecutive infrastructure failures (selector or quality LLM)
+        if len(ctx.retry_diagnostics) >= 2:
+            prev = ctx.retry_diagnostics[-2]
+            if self._is_infra_failure(latest) and self._is_infra_failure(prev):
+                ctx.orchestrator_debug.convergence_reason = "consecutive_infrastructure_failures"
+                return True
+
+        # Condition 5: Consecutive quality gate failures — quality never passes
+        # Catches the EVAL-008 scenario where source_set and missing_signals change
+        # each round but quality gate never passes, so retrying won't help.
+        max_consec = int(getattr(self._settings, "quality_gate_max_consecutive_failures", 3))
+        if len(ctx.retry_diagnostics) >= max_consec:
+            tail = ctx.retry_diagnostics[-max_consec:]
+            if all(not d.get("gate_pass") for d in tail):
+                ctx.orchestrator_debug.convergence_reason = "consecutive_gate_failures_exhausted"
+                return True
+
+        # Condition 5b: Soft contradiction — LLM says pass but code overrides.
+        # Catches EVAL-007: LLM returns gate_pass=True + missing_signals non-empty
+        # every round. The contradiction guard correctly forces gate_pass=False,
+        # but retrying won't resolve the semantic disagreement.
+        if len(ctx.retry_diagnostics) >= 2:
+            tail2 = ctx.retry_diagnostics[-2:]
+            all_overridden = all(
+                not d.get("gate_pass") and d.get("raw_llm_gate_pass") is True
+                for d in tail2
+            )
+            if all_overridden:
+                ctx.orchestrator_debug.convergence_reason = "soft_contradiction_llm_agrees_evidence_sufficient"
+                return True
+
+        return False
+
+    @staticmethod
+    def _is_infra_failure(diagnostic: dict) -> bool:
+        """Check if a diagnostic entry shows an infrastructure (LLM) failure."""
+        return bool(
+            diagnostic.get("evidence_selector_llm_failed")
+            or diagnostic.get("quality_llm_failed")
+        )
+
+    def _top_sources_cover_expected(self, ctx: OrchestratorContext) -> bool:
+        """Check if the top-5 evidence chunks already cover expected source types.
+
+        If the top-5 chunks have the same source URLs as the expected doc types
+        from the query spec, retrying retrieval won't find new information.
+        """
+        if not ctx.evidence or not ctx.query_spec:
+            return False
+
+        top_chunks = ctx.evidence[:5]
+        if not top_chunks:
+            return False
+
+        expected_doc_types = set(
+            ctx.query_spec.doc_type_prior
+            or getattr(ctx.query_spec.retrieval_hints, "doc_type_prior", [])
+            or []
+        )
+        if not expected_doc_types:
+            return False
+
+        # Check if top-5 chunks already come from expected source types
+        covered_types: set[str] = set()
+        for chunk in top_chunks:
+            doc_type = getattr(chunk, "doc_type", None) or ""
+            if doc_type:
+                covered_types.add(doc_type)
+            source_url = getattr(chunk, "source_url", None) or ""
+            # Infer doc type from source URL patterns
+            for dt in expected_doc_types:
+                if dt in source_url.lower():
+                    covered_types.add(dt)
+
+        # If all expected doc types are already covered, retrying won't help
+        if expected_doc_types.issubset(covered_types):
+            return True
+
+        return False
 
     def _apply_result(
         self,
@@ -642,10 +801,9 @@ class PipelineRunner:
                 "name",
                 "primary",
             )
-            ctx.max_attempts = max(
-                self._settings.max_retrieval_attempts,
-                1 + len(hints.fallback_hypotheses or []),
-            )
+            # Configured value is the hard ceiling; fallback hypotheses count
+            # as initial candidates within that budget, not additional attempts.
+            ctx.max_attempts = max(1, self._settings.max_retrieval_attempts)
         return PhaseResult(
             query_spec=query_spec,
             effective_query=effective_query,
@@ -768,6 +926,15 @@ class PipelineRunner:
                     stage_reasons=ctx.stage_reasons[-5:],
                 )
                 if ctx.early_output is not None:
+                    # Patch early_output debug with terminal context so downstream
+                    # consumers (eval, telemetry) see termination_reason and route.
+                    try:
+                        debug = getattr(ctx.early_output, "debug", None)
+                        if isinstance(debug, dict):
+                            debug.setdefault("termination_reason", ctx.termination_reason)
+                            debug.setdefault("stage_reasons", list(ctx.stage_reasons))
+                    except Exception:
+                        pass
                     return ctx.early_output
                 return await self.build_output(ctx, action)
 
@@ -829,8 +996,9 @@ class PipelineRunner:
         total_started = time.perf_counter()
         trace = TraceCollector(trace_id=trace_id, source="reply")
         llm_usage_var.set([])
-        if get_debug_llm_calls():
-            llm_call_log_var.set([])
+        # Always initialize lightweight LLM call log — heavy fields (messages,
+        # response, tokens, cost) are still gated by debug_llm_calls in _record_llm_attempt.
+        llm_call_log_var.set([])
         ctx = OrchestratorContext(
             query=query,
             trace_id=trace_id,
@@ -838,7 +1006,26 @@ class PipelineRunner:
             source_lang=source_lang,
             trace_collector=trace,
         )
-        output = await self._run_context(ctx)
+        # End-to-end pipeline timeout protection
+        timeout_s = float(getattr(self._settings, "pipeline_timeout_seconds", 120.0) or 0)
+        try:
+            if timeout_s > 0:
+                output = await asyncio.wait_for(self._run_context(ctx), timeout=timeout_s)
+            else:
+                output = await self._run_context(ctx)
+        except asyncio.TimeoutError:
+            logger.warning("pipeline_timeout", trace_id=trace_id, timeout_s=timeout_s)
+            ctx.termination_reason = "pipeline_timeout"
+            ctx.state = OrchestratorState.COMPLETE
+            from app.services.schemas import AnswerOutput
+            output = AnswerOutput(
+                decision="ESCALATE",
+                answer="处理超时，请稍后重试。",
+                followup_questions=[],
+                citations=[],
+                confidence=0.0,
+                debug={"pipeline_timeout": True, "timeout_seconds": timeout_s},
+            )
         if not ctx.early_output and not ctx.skip_retrieval:
             trace.complete_node("retrieve")
             trace.complete_node("assess_evidence")
@@ -853,6 +1040,10 @@ class PipelineRunner:
         output.debug["timings"] = normalized_timings
         output.debug.update(normalized_timings)
         output.debug["retry_count"] = max(0, int(ctx.retrieval_attempt or 0))
+        if ctx.retry_diagnostics:
+            output.debug["retry_diagnostics"] = ctx.retry_diagnostics
+        if ctx.orchestrator_debug.convergence_reason:
+            output.debug["convergence_reason"] = ctx.orchestrator_debug.convergence_reason
         if ctx.agentic_debug:
             output.debug["agentic_router"] = ctx.agentic_debug
         trace.set_tool_result(

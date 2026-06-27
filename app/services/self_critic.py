@@ -87,20 +87,20 @@ async def critique(
     user_content = "\n".join(user_parts).strip()
 
     try:
-        from app.core.tracing import current_llm_task_var
+        from app.core.tracing import llm_task_context
 
-        current_llm_task_var.set("self_critic")
         llm = get_llm_gateway()
         model = get_model_for_task("self_critic")
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": SELF_CRITIC_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=320,
-        )
+        with llm_task_context("self_critic"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": SELF_CRITIC_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=320,
+            )
         content = (resp.content or "").strip()
         if "```json" in content:
             match = re.search(r"```json\s*([\s\S]*?)\s*```", content)

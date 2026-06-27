@@ -128,3 +128,38 @@ def test_exception_safe_route_falls_back_to_rag():
     assert decision.route == AgenticRoute.RAG_SEARCH
     assert decision.reason == "router_exception"
     assert decision.fallback_to_rag is True
+
+
+def test_refund_knowledge_query_routes_to_rag():
+    """含'退款'的知识查询应进入 RAG，而非 HUMAN_HANDOFF。"""
+    router = AgenticRouter()
+
+    knowledge_queries = [
+        "退款一般多久到账啊？",
+        "退款都五六个工作日没到，我还能查吗？",
+        "自由搭配组合退一件，退款会按我看到的单价退吗？",
+        "我退货没把满赠小包寄回，退款是不是应该先全额退我？",
+    ]
+
+    for query in knowledge_queries:
+        decision = router.route(AgenticRouterInput(query=query))
+        assert decision.route == AgenticRoute.RAG_SEARCH, (
+            f"知识查询 '{query}' 应走 RAG_SEARCH，实际走 {decision.route}"
+        )
+
+
+def test_refund_execution_request_routes_to_human_handoff():
+    """代执行退款请求应走 HUMAN_HANDOFF。"""
+    router = AgenticRouter()
+
+    execution_queries = [
+        "帮我退款",
+        "帮我把订单退款并删除账号",
+        "给我取消订单",
+    ]
+
+    for query in execution_queries:
+        decision = router.route(AgenticRouterInput(query=query))
+        assert decision.route == AgenticRoute.HUMAN_HANDOFF, (
+            f"代执行请求 '{query}' 应走 HUMAN_HANDOFF，实际走 {decision.route}"
+        )

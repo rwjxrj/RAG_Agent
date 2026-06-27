@@ -6,6 +6,82 @@ from app.services.orchestrator import OrchestratorContext
 from app.services.schemas import AssessResult
 
 
+def _collect_source_set(ctx: OrchestratorContext) -> set[str]:
+    """Collect the set of source URLs from current evidence."""
+    sources: set[str] = set()
+    for chunk in (ctx.evidence or []):
+        url = getattr(chunk, "source_url", None) or ""
+        if url:
+            sources.add(url)
+    return sources
+
+
+def _record_retry_diagnostics(ctx: OrchestratorContext, gate_passed: bool) -> None:
+    """Record structured diagnostics for quality gate retry analysis (Issue 4)."""
+    ro = ctx.retrieve_output
+    quality_report = ctx.quality_report
+    if quality_report is None:
+        return
+
+    current_source_set = _collect_source_set(ctx)
+    current_missing_signals = sorted(
+        list(getattr(quality_report, "missing_signals", []) or [])
+    )
+
+    diagnostic: dict = {
+        "retrieval_attempt": ctx.retrieval_attempt,
+        "gate_pass": gate_passed,
+        "raw_llm_gate_pass": getattr(quality_report, "gate_pass", None),
+        "quality_score": getattr(quality_report, "quality_score", None),
+        "completeness_score": getattr(quality_report, "completeness_score", None),
+        "actionability_score": getattr(quality_report, "actionability_score", None),
+        "missing_signals": current_missing_signals,
+        "hard_requirement_coverage": dict(
+            getattr(quality_report, "hard_requirement_coverage", {}) or {}
+        ),
+        "selected_query": (
+            ro.retry_strategy_applied.get("selected_retrieval_query")
+            if ro.retry_strategy_applied
+            else None
+        ),
+        "active_hypothesis_name": ro.active_hypothesis_name,
+        "required_evidence": list(ro.active_required_evidence or []),
+        "hard_requirements": list(ro.active_hard_requirements or []),
+        "evidence_selector_used_llm": (
+            ro.retry_strategy_applied.get("evidence_selector_used_llm")
+            if ro.retry_strategy_applied
+            else None
+        ),
+        "evidence_selector_skip_reason": (
+            ro.retry_strategy_applied.get("evidence_selector_skip_reason")
+            if ro.retry_strategy_applied
+            else None
+        ),
+        "evidence_selector_trigger_reason": (
+            ro.retry_strategy_applied.get("evidence_selector_trigger_reason")
+            if ro.retry_strategy_applied
+            else None
+        ),
+        "evidence_selector_llm_failed": (
+            ro.retry_strategy_applied.get("evidence_selector_llm_failed", False)
+            if ro.retry_strategy_applied
+            else False
+        ),
+        "quality_llm_failed": "quality_llm_failed" in current_missing_signals,
+        "source_set_changed": (
+            current_source_set != ctx.previous_source_set
+            if ctx.retrieval_attempt > 0
+            else None
+        ),
+        "source_count": len(current_source_set),
+        "evidence_count": len(ctx.evidence or []),
+    }
+
+    ctx.retry_diagnostics.append(diagnostic)
+    ctx.previous_source_set = current_source_set
+    ctx.previous_missing_signals = current_missing_signals
+
+
 async def execute_assess_evidence(ctx: OrchestratorContext) -> AssessResult:
     """Run quality gate on retrieved evidence. LLM evaluates; no rule-based logic."""
     ro = ctx.retrieve_output
@@ -73,6 +149,10 @@ async def execute_assess_evidence(ctx: OrchestratorContext) -> AssessResult:
         history[-1]["gate_pass"] = gate_passed
         history[-1]["reason"] = quality_report.reason
         ro.hypothesis_history = history
+
+    # Record retry diagnostics (Issue 4)
+    _record_retry_diagnostics(ctx, gate_passed)
+
     return AssessResult(
         quality_report=quality_report,
         passes_quality_gate=gate_passed,

@@ -180,7 +180,11 @@ async def run_ingest(docs: list[dict], skip_existing: bool = True) -> dict:
     await ensure_migrations()
 
     from app.db.session import async_session_factory
+    from app.services.embedding_config import refresh_cache as refresh_embedding_cache
     from app.services.ingestion import IngestionService
+
+    async with async_session_factory() as session:
+        await refresh_embedding_cache(session)
 
     svc = IngestionService()
     results = {"ok": 0, "skipped": 0, "error": 0}
@@ -188,7 +192,11 @@ async def run_ingest(docs: list[dict], skip_existing: bool = True) -> dict:
     for i, doc in enumerate(docs):
         try:
             async with async_session_factory() as session:
-                result = await svc.ingest_document(doc, session)
+                result = await svc.ingest_document(
+                    doc,
+                    session,
+                    force_reindex=not skip_existing,
+                )
                 if result:
                     results["ok"] += 1
                 else:
@@ -208,6 +216,7 @@ def main():
     parser.add_argument("--source-dir", default="source", help="Path to source directory")
     parser.add_argument("--files", nargs="*", help="Specific files to load (default: all)")
     parser.add_argument("--dry-run", action="store_true", help="Only load, don't ingest")
+    parser.add_argument("--force-reindex", action="store_true", help="Re-index existing documents even if content is unchanged")
     args = parser.parse_args()
 
     source_dir = Path(args.source_dir)
@@ -229,7 +238,7 @@ def main():
         sys.exit(0)
 
     print("Running ingestion...")
-    results = asyncio.run(run_ingest(docs))
+    results = asyncio.run(run_ingest(docs, skip_existing=not args.force_reindex))
     print(f"Done: {results['ok']} ok, {results['skipped']} skipped, {results['error']} errors")
 
 

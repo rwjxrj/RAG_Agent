@@ -143,5 +143,5 @@ class AgenticRouter:
     @staticmethod
     def _is_human_handoff(normalized: str) -> bool:
         sensitive_terms = ("账号", "账单", "发票", "安全", "删除", "退款", "订单", "改订单", "取消订单")
-        execution_terms = ("帮我", "给我", "替我", "执行", "处理", "删除", "退款", "修改", "取消")
+        execution_terms = ("帮我", "给我", "替我", "执行", "处理", "删除", "修改", "取消")
         return any(term in normalized for term in sensitive_terms) and any(term in normalized for term in execution_terms)

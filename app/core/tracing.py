@@ -1,6 +1,8 @@
 """OpenTelemetry tracing and Prometheus metrics."""
 
 from contextvars import ContextVar
+from contextlib import contextmanager
+from collections.abc import Iterator
 from uuid import uuid4
 
 from fastapi import Request
@@ -27,6 +29,16 @@ llm_call_log_var: ContextVar[list | None] = ContextVar("llm_call_log", default=N
 
 # Current LLM task (set by caller before chat, e.g. "normalizer", "evidence_quality")
 current_llm_task_var: ContextVar[str | None] = ContextVar("current_llm_task", default=None)
+
+
+@contextmanager
+def llm_task_context(task: str) -> Iterator[None]:
+    """Temporarily label LLM calls for tracing, restoring the previous task on exit."""
+    token = current_llm_task_var.set(task)
+    try:
+        yield
+    finally:
+        current_llm_task_var.reset(token)
 
 
 def get_trace_id() -> str:

@@ -12,6 +12,7 @@ from app.services.orchestrator import (
 )
 from app.services.reviewer import ReviewerResult, ReviewerStatus
 from app.services.schemas import DecisionResult, QuerySpec, VerifyPhaseOutput
+from app.services.evidence_quality import QualityReport
 
 
 def _ctx(
@@ -85,6 +86,27 @@ def test_next_action_assessing_quality_fail_can_retry_returns_retry():
         max_attempts=2,
     )
     assert orch.next_action(ctx) == OrchestratorAction.RETRY_RETRIEVE
+
+
+def test_next_action_assessing_quality_llm_failure_skips_retry():
+    orch = Orchestrator()
+    ctx = _ctx(
+        OrchestratorState.ASSESSING,
+        passes_quality_gate=False,
+        retrieval_attempt=0,
+        max_attempts=4,
+        quality_report=QualityReport(
+            quality_score=0.0,
+            feature_scores={},
+            missing_signals=["quality_llm_failed"],
+            staleness_risk=None,
+            boilerplate_risk=None,
+            gate_pass=False,
+            reason="LLM quality assessment failed.",
+        ),
+    )
+
+    assert orch.next_action(ctx) == OrchestratorAction.DECIDE
 
 
 def test_next_action_assessing_quality_fail_no_retry_returns_decide():
@@ -469,3 +491,60 @@ def test_pipeline_runner_is_public_entrypoint_without_extra_context_dict():
 
     assert runner.__class__.__name__ == "PipelineRunner"
     assert not hasattr(ctx, "extra")
+
+
+# ---------------------------------------------------------------------------
+# Pipeline timeout protection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_timeout_returns_escalate():
+    """When pipeline exceeds timeout, should return ESCALATE decision."""
+    import asyncio
+
+    class SlowOrchestrator(Orchestrator):
+        async def _run_context(self, ctx):
+            await asyncio.sleep(10)  # Simulate slow pipeline
+            return None  # Never reached
+
+    orch = SlowOrchestrator(
+        retrieval=object(),
+        llm=object(),
+        reviewer=object(),
+    )
+    # Override settings to use a very short timeout
+    orch._settings = type("S", (), {"pipeline_timeout_seconds": 0.1})()
+
+    output = await orch.run("test query", trace_id="trace-timeout")
+
+    assert output.decision == "ESCALATE"
+    assert output.debug.get("pipeline_timeout") is True
+    assert output.debug.get("timeout_seconds") == 0.1
+
+
+@pytest.mark.asyncio
+async def test_run_no_timeout_when_disabled():
+    """When pipeline_timeout_seconds=0, no timeout is applied."""
+
+    class FastOrchestrator(Orchestrator):
+        async def _run_context(self, ctx):
+            from app.services.schemas import AnswerOutput
+            return AnswerOutput(
+                decision="PASS",
+                answer="ok",
+                followup_questions=[],
+                citations=[],
+                confidence=0.9,
+            )
+
+    orch = FastOrchestrator(
+        retrieval=object(),
+        llm=object(),
+        reviewer=object(),
+    )
+    orch._settings = type("S", (), {"pipeline_timeout_seconds": 0})()
+
+    output = await orch.run("test query", trace_id="trace-no-timeout")
+
+    assert output.decision == "PASS"

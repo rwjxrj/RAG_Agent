@@ -487,6 +487,26 @@ class Settings(BaseSettings):
         le=20,
         description="Fallback top-k when LLM disabled or fails.",
     )
+    evidence_selector_structured_doc_types: str = Field(
+        default="howto,docs,faq,policy,tos,pricing",
+        description="Comma-separated doc types considered structured for evidence selection rebalancing.",
+    )
+    evidence_selector_conversation_cap: int = Field(
+        default=1,
+        ge=0,
+        le=5,
+        description="Max conversation chunks to retain in evidence selection.",
+    )
+    evidence_selector_min_structured_share: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Minimum share of structured docs in the selected evidence set.",
+    )
+    evidence_selector_skip_single_policy_language: bool = Field(
+        default=True,
+        description="Skip selector LLM when sole hard_requirement is policy_language, top candidates structured, and risk is low.",
+    )
 
     # Chunk filter – before generate: LLM selects relevant chunks
     chunk_filter_enabled: bool = Field(
@@ -528,6 +548,55 @@ class Settings(BaseSettings):
     generate_reasoning_max_chunks: int = Field(default=10, ge=1, le=20)
     generate_reasoning_max_options: int = Field(default=5, ge=1, le=10)
     generate_reasoning_max_tokens: int = Field(default=400, ge=64, le=1200)
+    generate_reasoning_skip_simple_lookup: bool = Field(
+        default=True,
+        description="Skip reasoning prepass for low-risk simple lookup cases after evidence quality passes.",
+    )
+    generate_reasoning_fastpath_max_evidence_chunks: int = Field(default=8, ge=1, le=20)
+    generate_reasoning_fastpath_allow_missing_signals: bool = Field(
+        default=True,
+        description="Allow fast-path skip when missing_signals present but quality gate passed.",
+    )
+    generate_reasoning_fastpath_covered_hard_requirements: bool = Field(
+        default=True,
+        description="Allow fast-path skip when hard_requirements exist but quality_report covers all.",
+    )
+    generate_reasoning_fastpath_allow_conversation_history: bool = Field(
+        default=True,
+        description="Allow fast-path when conversation_history present but quality gate passed.",
+    )
+    generate_reasoning_fastpath_allow_medium_risk: bool = Field(
+        default=True,
+        description="Allow fast-path for medium-risk queries when quality gate passed. High risk always blocks.",
+    )
+    generate_reasoning_fastpath_allow_complex_shape: bool = Field(
+        default=True,
+        description="Allow fast-path for non-simple answer shapes (procedural, comparison, etc.) when quality gate passed.",
+    )
+
+    # Normalizer fast-path (Issue 3)
+    normalizer_fastpath_enabled: bool = Field(
+        default=True,
+        description="Enable deterministic fast-path for high-confidence FAQ patterns in normalizer. When disabled, all queries go through LLM.",
+    )
+
+    # Quality gate retry convergence (Issue 4)
+    quality_gate_retry_convergence_enabled: bool = Field(
+        default=True,
+        description="Enable retry convergence: stop retrying when missing_signals are unchanged and no new sources appear.",
+    )
+    quality_gate_max_consecutive_failures: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Max consecutive quality gate failures before forcing retry stop. Catches cases where source_set and missing_signals change each round but quality never passes.",
+    )
+    pipeline_timeout_seconds: float = Field(
+        default=120.0,
+        ge=0.0,
+        le=600.0,
+        description="End-to-end pipeline wall-clock timeout in seconds. 0 = disabled. Returns best-effort output on timeout.",
+    )
 
     # Workstream 5: Claim-level review
     claim_level_review_enabled: bool = Field(

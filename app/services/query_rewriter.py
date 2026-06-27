@@ -192,15 +192,18 @@ async def rewrite_for_retrieval(
     try:
         model = get_model_for_task("query_rewriter")
         llm = get_llm_gateway()
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": QUERY_REWRITER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=256,
-        )
+        from app.core.tracing import llm_task_context
+
+        with llm_task_context("query_rewriter"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": QUERY_REWRITER_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=256,
+            )
         content = (resp.content or "").strip()
         if "```json" in content:
             match = re.search(r"```json\s*([\s\S]*?)\s*```", content)

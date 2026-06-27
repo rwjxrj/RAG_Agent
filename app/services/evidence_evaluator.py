@@ -66,19 +66,20 @@ async def evaluate_evidence(
     user_content = f"Query: {query}\n\nEvidence summaries:\n" + "\n".join(summaries)
 
     try:
-        from app.core.tracing import current_llm_task_var
-        current_llm_task_var.set("evidence_evaluator")
         llm = get_llm_gateway()
         model = get_model_for_task("evidence_evaluator")
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": EVIDENCE_EVALUATOR_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=256,
-        )
+        from app.core.tracing import llm_task_context
+
+        with llm_task_context("evidence_evaluator"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": EVIDENCE_EVALUATOR_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=256,
+            )
         content = (resp.content or "").strip()
         if "```json" in content:
             match = re.search(r"```json\s*([\s\S]*?)\s*```", content)

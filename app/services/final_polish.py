@@ -31,19 +31,19 @@ async def polish(answer: str) -> str | None:
             final_polish_total.inc()
         except Exception:
             pass
-        from app.core.tracing import current_llm_task_var
-        current_llm_task_var.set("final_polish")
+        from app.core.tracing import llm_task_context
         llm = get_llm_gateway()
         model = get_model_for_task("final_polish")
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": FINAL_POLISH_PROMPT},
-                {"role": "user", "content": f"Answer to polish:\n\n{answer}"},
-            ],
-            temperature=0.2,
-            model=model,
-            max_tokens=2048,
-        )
+        with llm_task_context("final_polish"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": FINAL_POLISH_PROMPT},
+                    {"role": "user", "content": f"Answer to polish:\n\n{answer}"},
+                ],
+                temperature=0.2,
+                model=model,
+                max_tokens=2048,
+            )
         polished = (resp.content or "").strip()
         if polished:
             try:

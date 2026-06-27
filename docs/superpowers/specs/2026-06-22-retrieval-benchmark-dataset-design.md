@@ -54,6 +54,7 @@ AI 一次生成两个 JSON 文件：
 
 ```text
 --dataset-json <path>  从独立 JSON 加载评测问题
+--capture-llm-calls   在当前评测进程强制采集逐次 LLM 调用数据
 ```
 
 外部数据集启用时：
@@ -82,7 +83,7 @@ AI 一次生成两个 JSON 文件：
 ## 错误与兼容性
 
 - 外部数据集格式错误时在运行前失败，并指出具体 case。
-- `debug_metadata.llm_calls` 缺失时检索指标仍可生成，LLM 汇总为空。
+- `debug_metadata.llm_call_log` 缺失时检索指标仍可生成，LLM 汇总为空。
 - 保留原有数据库评测模式和现有 JSON 字段，新增字段不删除旧字段。
 - 评测失败样本不计入质量和延迟分位数，但单独统计失败数及错误类型。
 

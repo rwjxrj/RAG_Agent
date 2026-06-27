@@ -3,7 +3,7 @@
 ## 结论
 这是一个企业客服 RAG 系统。Codex 在本项目中应优先做项目理解、流程梳理和小步可回退修改；默认不要大规模重构、不要复制 Claude Code hooks、不要安装依赖、不要修改业务代码以外的文件。Harness Starter 在本项目中适配为”Codex 可执行的文档化 harness”，而不是 Claude Hook 自动化。
 
-## 架构状态（2026-06-20）
+## 架构状态（2026-06-27）
 
 已完成的架构改进：
 
@@ -13,14 +13,14 @@
 | QuerySpec 拆分 | 46 字段拆分为 5 个子数据类（QueryIntent、RetrievalHints、ClarificationNeeds、AnswerContract、QuerySlots） | ✅ |
 | Retrieval 拆分 | `retrieve()` 486 行拆分为 7 个辅助方法 + BudgetConfig/DocTypeStrategy 数据类 | ✅ |
 | 类型化 Phase 输出 | 新增 RetrievePhaseOutput、GeneratePhaseOutput、VerifyPhaseOutput、OrchestratorDebug | ✅ |
-| 运行时注入消除 | `_last_reviewer_result` 移入 OrchContext 正式字段 | ✅ |
-| 计时统一 | Orchestrator 成为唯一计时来源 | ✅ |
-| 模型路由统一 | 所有模型路由通过 Orchestrator | ✅ |
+| 运行时注入消除 | `_last_reviewer_result` 移入 OrchestratorContext 正式字段 | ✅ |
+| 计时统一 | PipelineRunner 成为唯一计时来源 | ✅ |
+| 模型路由统一 | 所有模型路由通过 PipelineRunner | ✅ |
+| 依赖注入收口 | Retrieval、LLM、Reviewer、Agentic Router、Intent Matcher、Normalizer 和 Language Detector 由 PipelineRunner 统一持有 | ✅ |
+| 预处理纳入状态机 | Intent Cache、Agentic Router、语言识别和查询标准化纳入 PipelineRunner 状态推进 | ✅ |
+| PipelineRunner 合并 | `PipelineRunner` 成为唯一编排实现；`Orchestrator` 仅保留为兼容别名 | ✅ |
 
-待执行（阶段 2，PRD 在 `.scratch/orchestrator-refactor/PRD-phase2.md`）：
-- 任务 5：依赖注入移入 Orchestrator
-- 任务 6：预处理逻辑纳入状态机
-- 任务 7：合并为 PipelineRunner
+阶段 2 PRD（`.scratch/orchestrator-refactor/PRD-phase2.md`）中的任务 5、6、7 已完成。后续修改查询链路时，应以 `PipelineRunner`、`OrchestratorContext` 和 `app/services/phases/` 为当前架构边界，不再把 `Orchestrator` 视为独立实现。
 
 ## Codex 适配原则
 - 本项目主要使用 Codex，不以 Claude Code 为运行前提。

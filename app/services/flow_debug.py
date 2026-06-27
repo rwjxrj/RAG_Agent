@@ -66,6 +66,7 @@ def build_flow_debug(
     termination_reason: str | None = None,
     hypothesis_judge: dict[str, Any] | None = None,
     conversation_relevance: dict[str, Any] | None = None,
+    reasoning_prepass: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build debug dict for flow inspection (internal admin)."""
     debug: dict[str, Any] = {
@@ -155,6 +156,7 @@ def build_flow_debug(
             "resolved_slots": query_spec.query_slots.resolved_slots,
             "config_overrides_applied": query_spec.config_overrides_applied,
             "extraction_mode": getattr(query_spec, "extraction_mode", None),
+            "fastpath_rule": getattr(query_spec, "fastpath_rule", None),
         }
     if decision_router:
         reason = decision_router.reason
@@ -195,4 +197,6 @@ def build_flow_debug(
         debug["hypothesis_judge"] = hypothesis_judge
     if conversation_relevance:
         debug["conversation_relevance"] = conversation_relevance
+    if reasoning_prepass:
+        debug["reasoning_prepass"] = reasoning_prepass
     return debug

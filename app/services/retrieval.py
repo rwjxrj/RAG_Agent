@@ -1,10 +1,27 @@
 """Hybrid retrieval: BM25 + vector + rerank. Workstream 3: CandidatePool → EvidenceSet."""
 
 import asyncio
+import contextvars
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+# Optional eval-only source_url prefix filter. Set via set_source_url_filter().
+# When set, only chunks whose source_url starts with this prefix are kept after merge.
+_source_url_filter: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "retrieval_source_url_filter", default=None,
+)
+
+
+def set_source_url_filter(prefix: str | None) -> contextvars.Token:
+    """Set an eval-only source_url prefix filter for the current context."""
+    return _source_url_filter.set(prefix)
+
+
+def reset_source_url_filter(token: contextvars.Token) -> None:
+    """Reset source_url filter to previous value."""
+    _source_url_filter.reset(token)
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -1154,6 +1171,19 @@ class RetrievalService:
             bm25_chunks, supporting_bm25, vector_chunks, supporting_vector, extra_bm25, diversity_bm25,
         )
 
+        # 5b. Optional eval-only source_url prefix filter
+        source_filter = _source_url_filter.get(None)
+        if source_filter and merged:
+            pre_filter_count = len(merged)
+            merged = [c for c in merged if (c.source_url or "").startswith(source_filter)]
+            if len(merged) < pre_filter_count:
+                logger.debug(
+                    "retrieval_source_url_filtered",
+                    prefix=source_filter,
+                    before=pre_filter_count,
+                    after=len(merged),
+                )
+
         # 6. Stats
         stats: dict[str, Any] = {
             "bm25_count": len(bm25_chunks), "vector_count": len(vector_chunks),
@@ -1248,11 +1278,13 @@ class RetrievalService:
 
         # 11. Evidence selector
         required_evidence = list(plan.active_required_evidence or [])
+        hard_requirements = list(plan.active_hard_requirements or [])
         if not required_evidence and effective_query_spec:
             required_evidence = list(
-                effective_query_spec.retrieval_hints.hard_requirements
-                or effective_query_spec.retrieval_hints.required_evidence or []
+                effective_query_spec.retrieval_hints.required_evidence or []
             )
+        if not hard_requirements and effective_query_spec:
+            hard_requirements = list(effective_query_spec.retrieval_hints.hard_requirements or [])
         coverage_map: dict[str, str] | None = None
         selector_candidates = list(reranked_search)
         if self._settings.evidence_selector_use_llm and reranked_search:
@@ -1263,16 +1295,69 @@ class RetrievalService:
             selection = await select_evidence_for_query(
                 effective_query, reranked_search,
                 required_evidence=required_evidence if required_evidence else None,
+                hard_requirements=hard_requirements if hard_requirements else None,
+                answer_type=(
+                    effective_query_spec.answer_contract.answer_type
+                    if effective_query_spec
+                    else None
+                ),
+                answer_shape=(
+                    plan.answer_shape
+                    or (
+                        effective_query_spec.answer_contract.answer_shape
+                        if effective_query_spec
+                        else None
+                    )
+                ),
+                answer_expectation=(
+                    effective_query_spec.answer_contract.answer_expectation
+                    if effective_query_spec
+                    else None
+                ),
+                risk_level=(
+                    effective_query_spec.query_intent.risk_level
+                    if effective_query_spec
+                    else None
+                ),
                 product_type=product_type, top_k_fallback=self._settings.evidence_selector_fallback_top_k,
             )
             reranked_search = selection.selected
+            stats["evidence_selector"] = {
+                "used_llm": selection.used_llm,
+                "coverage_map": selection.coverage_map,
+                "uncovered_requirements": selection.uncovered_requirements[:5],
+                "reasoning": selection.reasoning[:100],
+                "required_evidence": list(required_evidence),
+                "hard_requirements": list(hard_requirements),
+                "answer_type": (
+                    effective_query_spec.answer_contract.answer_type
+                    if effective_query_spec
+                    else None
+                ),
+                "answer_shape": (
+                    plan.answer_shape
+                    or (
+                        effective_query_spec.answer_contract.answer_shape
+                        if effective_query_spec
+                        else None
+                    )
+                ),
+                "risk_level": (
+                    effective_query_spec.query_intent.risk_level
+                    if effective_query_spec
+                    else None
+                ),
+            }
+            if selection.skip_reason:
+                stats["evidence_selector"]["skip_reason"] = selection.skip_reason
+            if selection.trigger_reason:
+                stats["evidence_selector"]["trigger_reason"] = selection.trigger_reason
+            # Detect selector LLM failure: trigger was set but LLM didn't run and no skip reason
+            stats["evidence_selector"]["llm_failed"] = bool(
+                selection.trigger_reason and not selection.used_llm and not selection.skip_reason
+            )
             if selection.used_llm:
                 coverage_map = selection.coverage_map
-                stats["evidence_selector"] = {
-                    "used_llm": True, "coverage_map": selection.coverage_map,
-                    "uncovered_requirements": selection.uncovered_requirements[:5],
-                    "reasoning": selection.reasoning[:100],
-                }
         reranked_search = self._retain_supporting_conversation_chunk(
             reranked_search, selector_candidates,
             max_items=max(rerank_k, self._settings.evidence_selector_fallback_top_k),

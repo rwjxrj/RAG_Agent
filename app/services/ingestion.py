@@ -313,6 +313,7 @@ class IngestionService:
             existing.source_file = source_file
             existing.updated_at = datetime.utcnow()
             await db_session.flush()
+            await db_session.commit()
             return existing.id
 
         # Create or update document

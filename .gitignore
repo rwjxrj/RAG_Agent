@@ -2,6 +2,9 @@
 .env.*
 !.env.example
 
+# Claude Code session state
+.claude/
+
 .idea/
 .history
 # Company/proprietary knowledge base - do not commit
@@ -19,6 +22,9 @@ htmlcov/
 *.egg-info/
 dist/
 build/
+
+# Frontend build output
+frontend/dist/
 
 # Debug/test output
 app/services/hn.html

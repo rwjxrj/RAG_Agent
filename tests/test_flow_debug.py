@@ -40,6 +40,25 @@ def test_build_flow_debug_decision_router_reason_human():
     assert debug["decision_router"]["reason_human"] == "Query ambiguous; referent unclear"
 
 
+def test_build_flow_debug_includes_reasoning_prepass_status():
+    debug = build_flow_debug(
+        trace_id="t3",
+        evidence_pack=None,
+        evidence=[],
+        messages=[],
+        model_used="gpt-4o-mini",
+        reasoning_prepass={
+            "skipped": True,
+            "reason": "simple_direct_lookup_quality_passed",
+        },
+    )
+
+    assert debug["reasoning_prepass"] == {
+        "skipped": True,
+        "reason": "simple_direct_lookup_quality_passed",
+    }
+
+
 def test_reason_human_readable_mapping():
     """REASON_HUMAN_READABLE should cover main decision reasons."""
     assert REASON_HUMAN_READABLE["sufficient"] == "Evidence sufficient for answer"

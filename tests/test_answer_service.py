@@ -1,5 +1,7 @@
 """Tests for answer service helpers."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.services.answer_utils import (
@@ -458,6 +460,32 @@ def test_build_answer_plan_for_pass_partial_lane():
     assert "numbers_units" in plan.required_citations
 
 
+def test_build_answer_plan_accepts_query_spec_answer_mode():
+    spec = QuerySpec(
+        intent="informational",
+        entities=[],
+        constraints={},
+        required_evidence=[],
+        risk_level="low",
+        keyword_queries=[],
+        semantic_queries=[],
+        clarifying_questions=[],
+        is_ambiguous=False,
+        answer_mode="PASS_EXACT",
+    )
+    dr = DecisionResult(
+        decision="PASS",
+        reason="exact_candidate_verify",
+        clarifying_questions=[],
+        partial_links=[],
+        lane="CANDIDATE_VERIFY",
+    )
+
+    plan = build_answer_plan(dr, spec, None)
+
+    assert plan.generation_constraints["target_answer_mode"] == "PASS_EXACT"
+
+
 def test_apply_answer_plan_bounds_pass_partial_output():
     plan = build_answer_plan(
         DecisionResult(
@@ -652,3 +680,95 @@ def test_render_calibrated_candidate_drops_fact_like_advice_block():
 
     assert "my recommendation:" not in answer.lower()
     assert "https://example.com/newseo3" not in answer
+
+
+# ---------------------------------------------------------------------------
+# Lightweight LLM telemetry integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lightweight_llm_log_flows_into_debug_output(monkeypatch):
+    """Integration: lightweight LLM call records must appear in AnswerOutput.debug
+    even when debug_llm_calls=False. Tests the full data flow:
+    orchestrator init → gateway record → output_builder → flow_debug → debug dict."""
+    from app.core.tracing import llm_task_context
+    from app.services.llm_gateway import OpenAIGateway
+
+    async def fake_create(**kwargs):
+        return SimpleNamespace(
+            id="response-1",
+            model=kwargs["model"],
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="provider answer"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=7, completion_tokens=3),
+        )
+
+    gateway = OpenAIGateway.__new__(OpenAIGateway)
+    gateway._settings = SimpleNamespace(
+        llm_max_tokens=256,
+        llm_prompt_cache_key="test-cache-key",
+        llm_prompt_cache_retention="in_memory",
+        llm_cache_ttl_seconds=3600,
+        redis_url="redis://localhost:6379/0",
+        app_name="SupportAI",
+    )
+    gateway._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+    )
+
+    async def no_cached_response(_key):
+        return None
+
+    async def ignore_cache_store(_key, _response):
+        return None
+
+    gateway._get_cached = no_cached_response
+    gateway._set_cached = ignore_cache_store
+    monkeypatch.setattr("app.services.archi_config.get_debug_llm_calls", lambda: False)
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_model", lambda: "fallback-model")
+
+    class TelemetryPipelineRunner(PipelineRunner):
+        async def _run_context(self, ctx):
+            messages = [{"role": "user", "content": ctx.query}]
+            with llm_task_context("generate"):
+                response = await self._llm.chat(
+                    messages=messages,
+                    temperature=0.0,
+                    model="primary-model",
+                )
+            ctx.answer = response.content
+            ctx.confidence = 0.8
+            ctx.generate_output.llm_resp = response
+            ctx.generate_output.messages = messages
+            ctx.termination_reason = "done"
+            ctx.add_stage_reason("generate", "llm_complete decision=PASS")
+            return await self.build_output(ctx, OrchestratorAction.DONE)
+
+    runner = TelemetryPipelineRunner(
+        retrieval=object(),
+        llm=gateway,
+        reviewer=object(),
+    )
+
+    output = await runner.run("hello", trace_id="test-lightweight-telemetry")
+
+    assert output.answer == "provider answer"
+    assert len(output.debug["llm_call_log"]) == 1
+    record = output.debug["llm_call_log"][0]
+    assert record["task"] == "generate"
+    assert record["model"] == "primary-model"
+    assert record["status"] == "success"
+    assert record["is_fallback"] is False
+    for heavy_field in (
+        "messages",
+        "response_content",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+    ):
+        assert heavy_field not in record

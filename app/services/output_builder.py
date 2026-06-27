@@ -210,6 +210,7 @@ async def build_output(
             termination_reason=ctx.termination_reason,
             hypothesis_judge=ctx.hypothesis_judge,
             conversation_relevance=ctx.generate_output.conversation_relevance,
+            reasoning_prepass=ctx.generate_output.reasoning_prepass,
         )
         debug_payload["rollout_flags"] = rollout_debug
         _attach_runtime_debug(debug_payload, ctx)
@@ -261,6 +262,7 @@ async def build_output(
             termination_reason=ctx.termination_reason,
             hypothesis_judge=ctx.hypothesis_judge,
             conversation_relevance=ctx.generate_output.conversation_relevance,
+            reasoning_prepass=ctx.generate_output.reasoning_prepass,
         )
         debug_payload["rollout_flags"] = rollout_debug
         _attach_runtime_debug(debug_payload, ctx)
@@ -303,7 +305,8 @@ async def build_output(
                 stage_reasons=ctx.stage_reasons,
                 termination_reason=ctx.termination_reason,
                 hypothesis_judge=ctx.hypothesis_judge,
-            conversation_relevance=ctx.generate_output.conversation_relevance,
+                conversation_relevance=ctx.generate_output.conversation_relevance,
+                reasoning_prepass=ctx.generate_output.reasoning_prepass,
             )
             debug_payload["rollout_flags"] = rollout_debug
             _attach_runtime_debug(debug_payload, ctx)
@@ -363,6 +366,7 @@ async def build_output(
             termination_reason=ctx.termination_reason,
             hypothesis_judge=ctx.hypothesis_judge,
             conversation_relevance=ctx.generate_output.conversation_relevance,
+            reasoning_prepass=ctx.generate_output.reasoning_prepass,
         )
         debug_payload["rollout_flags"] = rollout_debug
         _attach_runtime_debug(debug_payload, ctx)

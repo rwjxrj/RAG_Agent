@@ -61,6 +61,68 @@ class EvidenceSelectionResult:
     uncovered_requirements: list[str]
     reasoning: str = ""
     used_llm: bool = False
+    skip_reason: str | None = None
+    trigger_reason: str | None = None
+
+
+_WEAK_REQUIRED_EVIDENCE = {"policy_language"}
+_LLM_TRIGGER_ANSWER_TYPES = {"policy", "pricing", "direct_link"}
+
+
+def _first_selector_trigger_reason(
+    *,
+    required_evidence: list[str],
+    hard_requirements: list[str],
+    answer_type: str | None,
+    answer_shape: str | None,
+    answer_expectation: str | None,
+    risk_level: str | None,
+) -> str | None:
+    req_set = {str(req).strip().lower() for req in required_evidence if str(req).strip()}
+    shape = str(answer_shape or "").strip().lower()
+    risk = str(risk_level or "").strip().lower()
+    single_weak_direct_lookup = (
+        len(req_set) == 1
+        and req_set.issubset(_WEAK_REQUIRED_EVIDENCE)
+        and shape == "direct_lookup"
+        and risk not in {"medium", "high"}
+    )
+
+    if hard_requirements:
+        return "hard_requirements_present"
+
+    if risk in {"medium", "high"}:
+        return f"risk_level_{risk}"
+
+    if single_weak_direct_lookup:
+        return None
+
+    atype = str(answer_type or "").strip().lower()
+    if atype in _LLM_TRIGGER_ANSWER_TYPES:
+        return f"answer_type_{atype}"
+
+    expectation = str(answer_expectation or "").strip().lower()
+    if expectation == "exact":
+        return "answer_expectation_exact"
+
+    if len(req_set) >= 2:
+        return "multiple_required_evidence"
+
+    if shape in {"comparison", "recommendation", "procedural", "bounded_summary"}:
+        return f"answer_shape_{shape}"
+
+    return None
+
+
+def _selector_skip_reason(*, required_evidence: list[str], answer_shape: str | None) -> str:
+    if not required_evidence:
+        return "no_required_evidence"
+    req_set = {str(req).strip().lower() for req in required_evidence if str(req).strip()}
+    if len(req_set) == 1 and req_set.issubset(_WEAK_REQUIRED_EVIDENCE):
+        return "single_weak_required_evidence"
+    if str(answer_shape or "").strip().lower() == "direct_lookup":
+        return "direct_lookup_deterministic"
+    return "deterministic_selector_skip"
 
 
 def _structured_doc_types_from_settings() -> set[str]:
@@ -77,6 +139,21 @@ def _structured_doc_types_from_settings() -> set[str]:
 
 def _is_structured_doc(doc_type: str, structured_doc_types: set[str]) -> bool:
     return str(doc_type or "").strip().lower() in structured_doc_types
+
+
+def _top_candidates_all_structured(
+    reranked: list[tuple[SearchChunk, float]],
+    top_n: int = 3,
+) -> bool:
+    """Return True if the top-N reranked candidates are all structured documents."""
+    if not reranked:
+        return False
+    structured_doc_types = _structured_doc_types_from_settings()
+    top = reranked[:top_n]
+    return all(
+        _is_structured_doc(chunk.doc_type or "", structured_doc_types)
+        for chunk, _ in top
+    )
 
 
 def _find_lowest_score_index(
@@ -175,7 +252,7 @@ def _coverage_mapping_allowed(requirement: str, chunk: SearchChunk) -> bool:
     if req == "policy_language":
         configured_policy_types = {
             str(t).strip().lower()
-            for t in (get_settings().reviewer_policy_doc_types or [])
+            for t in (getattr(get_settings(), "reviewer_policy_doc_types", None) or [])
             if str(t).strip()
         }
         if configured_policy_types:
@@ -211,6 +288,11 @@ async def select_evidence_for_query(
     query: str,
     reranked: list[tuple[SearchChunk, float]],
     required_evidence: list[str] | None = None,
+    hard_requirements: list[str] | None = None,
+    answer_type: str | None = None,
+    answer_shape: str | None = None,
+    answer_expectation: str | None = None,
+    risk_level: str | None = None,
     product_type: str | None = None,
     top_k_fallback: int = 8,
 ) -> EvidenceSelectionResult:
@@ -234,24 +316,65 @@ async def select_evidence_for_query(
             coverage_map={},
             uncovered_requirements=list(required_evidence or []),
             used_llm=False,
+            skip_reason="empty_reranked",
         )
 
-    if not use_llm:
+    req_list = list(dict.fromkeys(required_evidence or []))
+    hard_req_list = list(dict.fromkeys(hard_requirements or []))
+    trigger_reason = _first_selector_trigger_reason(
+        required_evidence=req_list,
+        hard_requirements=hard_req_list,
+        answer_type=answer_type,
+        answer_shape=answer_shape,
+        answer_expectation=answer_expectation,
+        risk_level=risk_level,
+    )
+    # Override: skip LLM when direct_lookup + structured top candidates + low risk
+    # Also skip when sole hard_requirement is policy_language and top candidates are structured
+    _single_policy_lang = (
+        len(hard_req_list) == 1
+        and hard_req_list[0].strip().lower() == "policy_language"
+    )
+    _allow_policy_override = bool(getattr(
+        get_settings(), "evidence_selector_skip_single_policy_language", True,
+    ))
+    if (
+        trigger_reason is not None
+        and str(answer_shape or "").strip().lower() == "direct_lookup"
+        and (not hard_req_list or (_single_policy_lang and _allow_policy_override))
+        and str(risk_level or "").strip().lower() not in {"medium", "high"}
+        and _top_candidates_all_structured(reranked)
+    ):
+        trigger_reason = None
+    if not use_llm or trigger_reason is None:
         selected = _rebalance_structured_selection(
             reranked[:top_k_fallback],
             reranked[:20],
+        )
+        skip_reason = (
+            "selector_disabled"
+            if not use_llm
+            else _selector_skip_reason(required_evidence=req_list, answer_shape=answer_shape)
         )
         return EvidenceSelectionResult(
             selected=selected,
             coverage_map={},
             uncovered_requirements=[],
-            reasoning="top_k_fallback",
+            reasoning=(
+                "top_k_fallback"
+                if not use_llm
+                else (
+                    "top_k_no_required_evidence"
+                    if skip_reason == "no_required_evidence"
+                    else "deterministic_selector_skip"
+                )
+            ),
             used_llm=False,
+            skip_reason=skip_reason,
         )
 
     # Limit candidates for LLM context (top 15-20)
     candidates = reranked[:20]
-    req_list = list(dict.fromkeys(required_evidence or []))
 
     chunk_summaries = []
     chunk_by_id: dict[str, tuple[SearchChunk, float]] = {}
@@ -278,15 +401,18 @@ async def select_evidence_for_query(
     try:
         model = get_model_for_task("evidence_selector")
         llm = get_llm_gateway()
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": EVIDENCE_SELECTOR_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=512,
-        )
+        from app.core.tracing import llm_task_context
+
+        with llm_task_context("evidence_selector"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": EVIDENCE_SELECTOR_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=512,
+            )
         content = (resp.content or "").strip()
         if "```json" in content:
             match = re.search(r"```json\s*([\s\S]*?)\s*```", content)
@@ -328,6 +454,7 @@ async def select_evidence_for_query(
             uncovered_requirements=uncovered,
             reasoning=reasoning,
             used_llm=True,
+            trigger_reason=trigger_reason,
         )
 
     except Exception as e:
@@ -342,4 +469,5 @@ async def select_evidence_for_query(
             uncovered_requirements=req_list,
             reasoning=f"fallback: {str(e)[:50]}",
             used_llm=False,
+            trigger_reason=trigger_reason,
         )

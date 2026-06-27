@@ -130,6 +130,116 @@ def _parse_json_object(content: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _reasoning_prepass_skip_reason(
+    *,
+    ctx: OrchestratorContext,
+    settings,
+    evidence_count: int,
+) -> tuple[str | None, list[str]]:
+    """Determine whether reasoning prepass can be skipped (fast-path).
+
+    Returns (skip_reason, blockers):
+    - skip_reason: a string when all conditions pass → skip reasoning prepass;
+      None when any blocker prevents skipping → run reasoning prepass.
+    - blockers: list of all conditions that prevented fast-path (empty when skipped).
+    """
+    blockers: list[str] = []
+
+    # Hard gate: master switch
+    if not bool(getattr(settings, "generate_reasoning_skip_simple_lookup", True)):
+        return None, ["fastpath_master_switch_disabled"]
+    # Hard gate: quality gate must pass
+    if not ctx.passes_quality_gate:
+        return None, ["quality_gate_not_passed"]
+    # Hard gate: need evidence
+    if not ctx.evidence:
+        return None, ["no_evidence"]
+
+    # Evidence count threshold (default 8, was 5)
+    max_fastpath_chunks = max(
+        1,
+        int(getattr(settings, "generate_reasoning_fastpath_max_evidence_chunks", 8) or 8),
+    )
+    if evidence_count > max_fastpath_chunks:
+        blockers.append(f"evidence_count_exceeds_max({evidence_count}>{max_fastpath_chunks})")
+
+    # Missing signals — relaxed: allow when quality gate passed (configurable)
+    quality_report = ctx.quality_report
+    missing_signals = list(getattr(quality_report, "missing_signals", []) or [])
+    if missing_signals:
+        allow_missing = bool(getattr(
+            settings, "generate_reasoning_fastpath_allow_missing_signals", True,
+        ))
+        if not allow_missing:
+            blockers.append(f"missing_signals({','.join(missing_signals)})")
+
+    # Conversation history — relaxed: allow when quality gate passed (configurable)
+    if ctx.conversation_history:
+        allow_history = bool(getattr(
+            settings, "generate_reasoning_fastpath_allow_conversation_history", True,
+        ))
+        if not allow_history:
+            blockers.append("has_conversation_history")
+
+    query_spec = ctx.query_spec
+    risk_level = (
+        query_spec.query_intent.risk_level.strip().lower()
+        if query_spec
+        else "low"
+    )
+    # Risk level — relaxed: medium allowed when config toggle set; high always blocks
+    if risk_level == "high":
+        blockers.append("risk_level_high")
+    elif risk_level == "medium":
+        allow_medium = bool(getattr(
+            settings, "generate_reasoning_fastpath_allow_medium_risk", True,
+        ))
+        if not allow_medium:
+            blockers.append("risk_level_medium")
+
+    answer_shape = (
+        ctx.retrieve_output.active_answer_shape
+        or (query_spec.answer_contract.answer_shape if query_spec else "direct_lookup")
+        or "direct_lookup"
+    ).strip().lower()
+    # Answer shape — relaxed: complex shapes allowed when quality gate passed (configurable)
+    if answer_shape not in {"direct_lookup", "short_answer", "yes_no"}:
+        allow_complex = bool(getattr(
+            settings, "generate_reasoning_fastpath_allow_complex_shape", True,
+        ))
+        if not allow_complex:
+            blockers.append(f"answer_shape_not_simple({answer_shape})")
+
+    answer_type = (
+        query_spec.answer_contract.answer_type.strip().lower()
+        if query_spec
+        else "general"
+    )
+    # Answer type — relaxed: only account excluded (was pricing, direct_link, account)
+    if answer_type in {"account"}:
+        blockers.append(f"answer_type_excluded({answer_type})")
+
+    # Hard requirements — relaxed: allow when quality_report covers all (configurable)
+    hard_requirements = list(ctx.retrieve_output.active_hard_requirements or [])
+    if query_spec:
+        hard_requirements.extend(query_spec.retrieval_hints.hard_requirements or [])
+    if hard_requirements:
+        allow_covered = bool(getattr(
+            settings, "generate_reasoning_fastpath_covered_hard_requirements", True,
+        ))
+        if allow_covered:
+            coverage = list(getattr(quality_report, "hard_requirement_coverage", []) or [])
+            all_covered = len(coverage) > 0 and all(coverage)
+            if not all_covered:
+                blockers.append("hard_requirements_not_fully_covered")
+        else:
+            blockers.append("hard_requirements_present")
+
+    if not blockers:
+        return "simple_direct_lookup_quality_passed", []
+    return None, blockers
+
+
 async def _run_reasoning_prepass(
     *,
     ctx: OrchestratorContext,
@@ -172,18 +282,18 @@ async def _run_reasoning_prepass(
     )
 
     try:
-        from app.core.tracing import current_llm_task_var
+        from app.core.tracing import llm_task_context
 
-        current_llm_task_var.set("generate_reasoning")
-        resp = await llm.chat(
-            messages=[
-                {"role": "system", "content": _REASONING_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.0,
-            model=model,
-            max_tokens=max_tokens,
-        )
+        with llm_task_context("generate_reasoning"):
+            resp = await llm.chat(
+                messages=[
+                    {"role": "system", "content": _REASONING_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens=max_tokens,
+            )
         parsed = _parse_json_object(getattr(resp, "content", "") or "")
         if parsed is None:
             logger.warning("generate_reasoning_parse_failed")
@@ -261,12 +371,71 @@ async def execute_generate(
     max_chars = settings.llm_max_evidence_chars
     evidence_block = format_evidence_for_prompt(evidence, max_chars)
     model = orchestrator.get_model_for_query(ctx.query)
-    reasoning_prewrite = await _run_reasoning_prepass(
+    skip_reason, blockers = _reasoning_prepass_skip_reason(
         ctx=ctx,
-        llm=llm,
-        model=model,
         settings=settings,
+        evidence_count=len(evidence),
     )
+    if skip_reason:
+        prepass_info: dict = {
+            "skipped": True,
+            "reason": skip_reason,
+        }
+        query_spec = ctx.query_spec
+        prepass_info["skip_metadata"] = {
+            "evidence_count": len(evidence),
+            "answer_type": (
+                query_spec.answer_contract.answer_type.strip().lower()
+                if query_spec else "general"
+            ),
+            "answer_shape": (
+                ctx.retrieve_output.active_answer_shape
+                or (query_spec.answer_contract.answer_shape if query_spec else "direct_lookup")
+                or "direct_lookup"
+            ).strip().lower(),
+            "risk_level": (
+                query_spec.query_intent.risk_level.strip().lower()
+                if query_spec else "low"
+            ),
+            "hard_requirements_covered": (
+                bool(
+                    getattr(ctx.quality_report, "hard_requirement_coverage", None)
+                    and all(ctx.quality_report.hard_requirement_coverage)
+                )
+                if ctx.quality_report
+                else False
+            ),
+            "fastpath_relaxations": {
+                "conversation_history_allowed": bool(ctx.conversation_history),
+                "medium_risk_allowed": (
+                    query_spec.query_intent.risk_level.strip().lower() == "medium"
+                    if query_spec else False
+                ),
+                "complex_shape_allowed": (
+                    (
+                        ctx.retrieve_output.active_answer_shape
+                        or (query_spec.answer_contract.answer_shape if query_spec else "direct_lookup")
+                        or "direct_lookup"
+                    ).strip().lower() not in {"direct_lookup", "short_answer", "yes_no"}
+                ),
+            },
+        }
+        ctx.generate_output.reasoning_prepass = prepass_info
+        reasoning_prewrite = None
+    else:
+        reasoning_prewrite = await _run_reasoning_prepass(
+            ctx=ctx,
+            llm=llm,
+            model=model,
+            settings=settings,
+        )
+        prepass_info = {
+            "skipped": reasoning_prewrite is None,
+            "reason": "disabled_or_unavailable" if reasoning_prewrite is None else "executed",
+        }
+        if blockers:
+            prepass_info["blockers"] = blockers
+        ctx.generate_output.reasoning_prepass = prepass_info
     if reasoning_prewrite:
         ctx.generate_output.reasoning_prewrite = reasoning_prewrite
     user_content = f"User question: {ctx.effective_query}\n\nEvidence:\n{evidence_block}"
@@ -289,14 +458,14 @@ async def execute_generate(
 
     _pipeline_log("generate", "start", model=model, evidence_chunks=len(ctx.evidence), trace_id=ctx.trace_id)
     try:
-        from app.core.tracing import current_llm_task_var
+        from app.core.tracing import llm_task_context
 
-        current_llm_task_var.set("generate")
-        llm_resp = await llm.chat(
-            messages=messages,
-            temperature=settings.llm_temperature,
-            model=model,
-        )
+        with llm_task_context("generate"):
+            llm_resp = await llm.chat(
+                messages=messages,
+                temperature=settings.llm_temperature,
+                model=model,
+            )
     except Exception as e:
         logger.error("answer_llm_failed", error=str(e))
         ctx.generate_output.error = str(e)
@@ -354,12 +523,12 @@ async def execute_generate(
                 )
                 messages[-1]["content"] = messages[-1]["content"] + feedback
                 try:
-                    current_llm_task_var.set("generate_regenerate")
-                    llm_resp = await llm.chat(
-                        messages=messages,
-                        temperature=settings.llm_temperature,
-                        model=model,
-                    )
+                    with llm_task_context("generate_regenerate"):
+                        llm_resp = await llm.chat(
+                            messages=messages,
+                            temperature=settings.llm_temperature,
+                            model=model,
+                        )
                     parsed = parse_llm_response(llm_resp.content)
                     decision, answer, followup, confidence = apply_answer_plan(
                         answer_plan, parsed
