@@ -430,6 +430,8 @@ async def get_llm_config(_auth: str = Depends(verify_admin_api_key)):
     from app.services.llm_config import (
         get_llm_api_key,
         get_llm_base_url,
+        get_llm_fallback_api_key,
+        get_llm_fallback_base_url,
         get_llm_fallback_model,
         get_llm_model,
     )
@@ -438,6 +440,8 @@ async def get_llm_config(_auth: str = Depends(verify_admin_api_key)):
         llm_fallback_model=get_llm_fallback_model(),
         llm_api_key=get_llm_api_key(),
         llm_base_url=get_llm_base_url(),
+        llm_fallback_api_key=get_llm_fallback_api_key(),
+        llm_fallback_base_url=get_llm_fallback_base_url(),
     )
 
 
@@ -449,6 +453,10 @@ async def update_llm_config(
 ):
     """Update LLM config. Only provided fields are updated."""
     from app.db.models import generate_uuid
+    from app.services.llm_config import (
+        get_llm_fallback_api_key,
+        get_llm_fallback_base_url,
+    )
 
     keys_to_update = []
     if body.llm_model is not None:
@@ -459,6 +467,31 @@ async def update_llm_config(
         keys_to_update.append(("llm_api_key", body.llm_api_key))
     if body.llm_base_url is not None:
         keys_to_update.append(("llm_base_url", body.llm_base_url))
+    if body.llm_fallback_api_key is not None:
+        keys_to_update.append(("llm_fallback_api_key", body.llm_fallback_api_key))
+    if body.llm_fallback_base_url is not None:
+        keys_to_update.append(("llm_fallback_base_url", body.llm_fallback_base_url))
+
+    # Validate fallback config completeness:
+    # resolve what the effective fallback_api_key and fallback_base_url will be
+    # after this update, then reject incomplete pairs.
+    if body.llm_fallback_base_url is not None or body.llm_fallback_api_key is not None:
+        effective_fb_key = (
+            body.llm_fallback_api_key
+            if body.llm_fallback_api_key is not None
+            else get_llm_fallback_api_key()
+        )
+        effective_fb_url = (
+            body.llm_fallback_base_url
+            if body.llm_fallback_base_url is not None
+            else get_llm_fallback_base_url()
+        )
+        if (effective_fb_url and not effective_fb_key) or (effective_fb_key and not effective_fb_url):
+            raise HTTPException(
+                status_code=422,
+                detail="备用 API key 和备用 Base URL 必须同时填写才能切换供应商；缺一不可。"
+                "留空两者可保留现有配置。",
+            )
 
     for key, value in keys_to_update:
         result = await db.execute(select(AppConfig).where(AppConfig.key == key).limit(1))
@@ -475,6 +508,8 @@ async def update_llm_config(
     from app.services.llm_config import (
         get_llm_api_key,
         get_llm_base_url,
+        get_llm_fallback_api_key,
+        get_llm_fallback_base_url,
         get_llm_fallback_model,
         get_llm_model,
     )
@@ -483,6 +518,8 @@ async def update_llm_config(
         llm_fallback_model=get_llm_fallback_model(),
         llm_api_key=get_llm_api_key(),
         llm_base_url=get_llm_base_url(),
+        llm_fallback_api_key=get_llm_fallback_api_key(),
+        llm_fallback_base_url=get_llm_fallback_base_url(),
     )
 
 

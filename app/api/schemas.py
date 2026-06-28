@@ -264,6 +264,8 @@ class LLMConfigResponse(BaseModel):
     llm_fallback_model: str
     llm_api_key: str
     llm_base_url: str
+    llm_fallback_api_key: str
+    llm_fallback_base_url: str
 
 
 class LLMConfigUpdateRequest(BaseModel):
@@ -273,6 +275,8 @@ class LLMConfigUpdateRequest(BaseModel):
     llm_fallback_model: str | None = None
     llm_api_key: str | None = None
     llm_base_url: str | None = None
+    llm_fallback_api_key: str | None = None
+    llm_fallback_base_url: str | None = None
 
 
 class EmbeddingConfigResponse(BaseModel):

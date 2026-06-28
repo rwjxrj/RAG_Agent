@@ -235,6 +235,8 @@ export interface LLMConfig {
   llm_fallback_model: string
   llm_api_key: string
   llm_base_url: string
+  llm_fallback_api_key: string
+  llm_fallback_base_url: string
 }
 
 export interface LLMConfigUpdate {
@@ -242,6 +244,8 @@ export interface LLMConfigUpdate {
   llm_fallback_model?: string
   llm_api_key?: string
   llm_base_url?: string
+  llm_fallback_api_key?: string
+  llm_fallback_base_url?: string
 }
 
 export interface EmbeddingConfig {

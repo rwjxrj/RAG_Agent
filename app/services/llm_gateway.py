@@ -12,7 +12,14 @@ from openai import AsyncOpenAI
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.services.llm_config import get_llm_api_key, get_llm_base_url, get_llm_fallback_model, get_llm_model
+from app.services.llm_config import (
+    get_llm_api_key,
+    get_llm_base_url,
+    get_llm_fallback_api_key,
+    get_llm_fallback_base_url,
+    get_llm_fallback_model,
+    get_llm_model,
+)
 
 logger = get_logger(__name__)
 
@@ -139,6 +146,17 @@ class LLMGateway(ABC):
         """Send chat completion request."""
         pass
 
+    @abstractmethod
+    async def aclose(self) -> None:
+        """Release all HTTP resources (idempotent)."""
+        pass
+
+    async def __aenter__(self) -> "LLMGateway":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.aclose()
+
 
 _JSON_RESPONSE_TASKS = {
     "doc_type_classifier",
@@ -220,14 +238,32 @@ def _is_response_format_unsupported(error: Exception) -> bool:
     )
 
 
-def _cache_key(messages: list, model: str, temperature: float, options: dict[str, Any] | None = None) -> str:
-    """Generate cache key for request."""
+def _cache_key(
+    messages: list,
+    model: str,
+    temperature: float,
+    options: dict[str, Any] | None = None,
+    *,
+    base_url: str = "",
+) -> str:
+    """Generate cache key for request.
+
+    Includes model, temperature, base_url (provider endpoint identity),
+    and config version to isolate caches across different providers
+    and config changes.
+    """
+    from app.services.llm_config import get_config_version
+
     payload = json.dumps(
         {
             "messages": messages,
             "model": model,
             "temperature": temperature,
             "options": options or {},
+            "base_url": base_url or "",
+            "fallback_model": get_llm_fallback_model(),
+            "fallback_base_url": get_llm_fallback_base_url() or "",
+            "config_version": get_config_version(),
         },
         sort_keys=True,
     )
@@ -248,6 +284,44 @@ class OpenAIGateway(LLMGateway):
         if base_url and base_url.strip():
             kwargs["base_url"] = base_url.strip()
         self._client = AsyncOpenAI(**kwargs)
+
+        # Independent fallback client: when both fallback_base_url and
+        # fallback_api_key are configured, create a separate client pointing to
+        # a different provider/endpoint. If only base_url is set without a key,
+        # DO NOT send the primary key to an unknown endpoint — fall back to
+        # the primary client instead, to avoid credential leakage.
+        fallback_api_key = get_llm_fallback_api_key()
+        fallback_base_url = get_llm_fallback_base_url()
+        if fallback_base_url and fallback_base_url.strip() and fallback_api_key and fallback_api_key.strip():
+            fw_kwargs: dict = {
+                "api_key": fallback_api_key,
+                "timeout": self._settings.llm_timeout_seconds,
+            }
+            fw_kwargs["base_url"] = fallback_base_url.strip()
+            self._fallback_client = AsyncOpenAI(**fw_kwargs)
+            logger.info(
+                "llm_fallback_client_created",
+                base_url=fallback_base_url.strip(),
+                has_dedicated_key=True,
+            )
+        else:
+            self._fallback_client = self._client
+        self._closed = False
+
+    async def aclose(self) -> None:
+        """Idempotently close all owned AsyncOpenAI HTTP sessions."""
+        if getattr(self, '_closed', False):
+            return
+        self._closed = True
+        to_close = [self._client]
+        if self._fallback_client is not self._client:
+            to_close.append(self._fallback_client)
+        for c in to_close:
+            try:
+                await c.aclose()
+            except Exception:
+                pass
+        logger.debug("llm_gateway_closed", closed_count=len(to_close))
 
     async def chat(
         self,
@@ -274,8 +348,9 @@ class OpenAIGateway(LLMGateway):
             "response_format": extra_params.get("response_format"),
             "max_tokens": max_tokens,
         }
-        # Cache lookup (Redis)
-        request_cache_key = _cache_key(messages, model, temperature, cache_options)
+        # Cache lookup (Redis) — include endpoint base_url to isolate providers
+        base_url_for_cache = get_llm_base_url()
+        request_cache_key = _cache_key(messages, model, temperature, cache_options, base_url=base_url_for_cache)
         cached = await self._get_cached(request_cache_key)
         if cached:
             logger.debug("llm_cache_hit", model=model, cache_key=request_cache_key[:12])
@@ -290,10 +365,11 @@ class OpenAIGateway(LLMGateway):
         last_error = None
         for attempt, m in enumerate(models_to_try, start=1):
             attempt_started = time.perf_counter()
+            client = self._client if attempt == 1 else self._fallback_client
             request_params = dict(extra_params)
             try:
                 try:
-                    response = await self._client.chat.completions.create(
+                    response = await client.chat.completions.create(
                         model=m,
                         messages=messages,
                         temperature=temperature,
@@ -309,7 +385,7 @@ class OpenAIGateway(LLMGateway):
                         error=str(inner_error),
                     )
                     request_params.pop("response_format", None)
-                    response = await self._client.chat.completions.create(
+                    response = await client.chat.completions.create(
                         model=m,
                         messages=messages,
                         temperature=temperature,
@@ -337,8 +413,19 @@ class OpenAIGateway(LLMGateway):
                     finish_reason=choice.finish_reason,
                     raw={"id": response.id, "model": response.model},
                 )
-                await self._set_cached(request_cache_key, result)
-                logger.debug("llm_cache_store", model=response.model, cache_key=request_cache_key[:12])
+                if attempt == 1:
+                    # 主模型成功 → 存到主缓存键
+                    cache_key_to_use = request_cache_key
+                else:
+                    # fallback 成功 → 同时存到主缓存键和 fallback 专属缓存键
+                    await self._set_cached(request_cache_key, result)
+                    fallback_base_url_for_cache = get_llm_fallback_base_url() or get_llm_base_url()
+                    cache_key_to_use = _cache_key(
+                        messages, m, temperature, cache_options,
+                        base_url=fallback_base_url_for_cache,
+                    )
+                await self._set_cached(cache_key_to_use, result)
+                logger.debug("llm_cache_store", model=response.model, cache_key=cache_key_to_use[:12])
                 # Metrics
                 try:
                     from app.core.metrics import (
@@ -399,7 +486,7 @@ class OpenAIGateway(LLMGateway):
                         await asyncio.sleep(delay)
                         backoff_started = time.perf_counter()
                         try:
-                            response = await self._client.chat.completions.create(
+                            response = await client.chat.completions.create(
                                 model=m,
                                 messages=messages,
                                 temperature=temperature,
@@ -425,7 +512,18 @@ class OpenAIGateway(LLMGateway):
                                 finish_reason=choice.finish_reason,
                                 raw={"id": response.id, "model": response.model},
                             )
-                            await self._set_cached(request_cache_key, result)
+                            if attempt == 1:
+                                # 主模型成功 → 存到主缓存键
+                                cache_key_to_use = request_cache_key
+                            else:
+                                # fallback 成功 → 同时存到主缓存键和 fallback 专属缓存键
+                                await self._set_cached(request_cache_key, result)
+                                fallback_base_url_for_cache = get_llm_fallback_base_url() or get_llm_base_url()
+                                cache_key_to_use = _cache_key(
+                                    messages, m, temperature, cache_options,
+                                    base_url=fallback_base_url_for_cache,
+                                )
+                            await self._set_cached(cache_key_to_use, result)
                             try:
                                 from app.core.metrics import llm_requests_total, llm_tokens_total, llm_cost_usd, estimate_cost
                                 llm_requests_total.labels(model=response.model, status="success").inc()

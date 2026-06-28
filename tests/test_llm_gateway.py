@@ -28,6 +28,7 @@ def _build_gateway(fake_create):
             completions=SimpleNamespace(create=fake_create)
         )
     )
+    gateway._fallback_client = gateway._client  # fallback 未独立配置时指向同一 client
     return gateway
 
 
@@ -804,3 +805,137 @@ async def test_lightweight_records_fallback_status(monkeypatch):
     assert records[0]["is_fallback"] is False
     assert records[1]["status"] == "success"
     assert records[1]["is_fallback"] is True
+
+
+# ── Issue 01: fallback config contract ──────────────────────────────────
+
+
+def test_no_independent_fallback_fallback_client_is_primary(monkeypatch):
+    """未配置独立备用供应商时，_fallback_client 与 _client 是同一实例。"""
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_api_key", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_api_key", lambda: "sk-primary")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_model", lambda: "gpt-3.5-turbo")
+    monkeypatch.setattr("app.core.config.get_settings", lambda: _Settings())
+
+    gateway = OpenAIGateway()
+    assert gateway._fallback_client is gateway._client
+    assert gateway._fallback_client is not None
+
+
+def test_complete_independent_fallback_creates_separate_client(monkeypatch):
+    """完整配置独立备用供应商时，_fallback_client 是独立实例。"""
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_api_key", lambda: "sk-fallback")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_base_url", lambda: "https://fallback.example.com/v1")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_api_key", lambda: "sk-primary")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_model", lambda: "deepseek-chat")
+    monkeypatch.setattr("app.core.config.get_settings", lambda: _Settings())
+
+    gateway = OpenAIGateway()
+    assert gateway._fallback_client is not gateway._client
+    # Confirm the fallback client uses the dedicated key, not the primary key
+    assert gateway._fallback_client.api_key == "sk-fallback"
+
+
+def test_incomplete_fallback_url_only_fallback_client_is_primary(monkeypatch):
+    """仅配 Base URL 不给 key 时，回退到主 client，防止 key 泄漏。"""
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_api_key", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_base_url", lambda: "https://evil.example.com")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_api_key", lambda: "sk-primary")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_model", lambda: "deepseek-chat")
+    monkeypatch.setattr("app.core.config.get_settings", lambda: _Settings())
+
+    gateway = OpenAIGateway()
+    assert gateway._fallback_client is gateway._client
+    # If we were on the fallback client, its api_key would still be sk-primary,
+    # but since _fallback_client is the same object as _client, the primary key
+    # is never sent to evil.example.com because no separate client was created.
+
+
+def test_incomplete_fallback_key_only_fallback_client_is_primary(monkeypatch):
+    """仅配 API key 不给 Base URL 时，回退到主 client。"""
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_api_key", lambda: "sk-fallback")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_api_key", lambda: "sk-primary")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_model", lambda: "deepseek-chat")
+    monkeypatch.setattr("app.core.config.get_settings", lambda: _Settings())
+
+    gateway = OpenAIGateway()
+    assert gateway._fallback_client is gateway._client
+
+
+# ── Issue 02: async client lifecycle ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_primary_client(monkeypatch):
+    """aclose 关闭主客户端；再次调用幂等。"""
+    close_calls = []
+
+    class FakeClient:
+        async def aclose(self):
+            close_calls.append("closed")
+
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_api_key", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_api_key", lambda: "sk-primary")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_model", lambda: "gpt-3.5-turbo")
+    monkeypatch.setattr("app.services.llm_gateway.AsyncOpenAI", lambda **kw: FakeClient())
+    monkeypatch.setattr("app.core.config.get_settings", lambda: _Settings())
+
+    gateway = OpenAIGateway()
+    await gateway.aclose()
+    assert len(close_calls) == 1
+    # Second close is idempotent
+    await gateway.aclose()
+    assert len(close_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_separate_clients_once_each(monkeypatch):
+    """独立主/备客户端时，aclose 各关闭一次。"""
+    close_sequence = []
+
+    class FakeClient:
+        def __init__(self, name: str):
+            self._name = name
+
+        async def aclose(self):
+            close_sequence.append(self._name)
+
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_api_key", lambda: "sk-fallback")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_base_url", lambda: "https://fallback.example.com/v1")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_api_key", lambda: "sk-primary")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_model", lambda: "deepseek-chat")
+
+    instances = {"primary": FakeClient("primary"), "fallback": FakeClient("fallback")}
+    call_count = [0]
+
+    def fake_async_openai(**kw):
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            return instances["primary"]
+        return instances["fallback"]
+
+    monkeypatch.setattr("app.services.llm_gateway.AsyncOpenAI", fake_async_openai)
+    monkeypatch.setattr("app.core.config.get_settings", lambda: _Settings())
+
+    gateway = OpenAIGateway()
+    assert gateway._client is instances["primary"]
+    assert gateway._fallback_client is instances["fallback"]
+
+    await gateway.aclose()
+    assert len(close_sequence) == 2
+    assert close_sequence[0] == "primary"
+    assert close_sequence[1] == "fallback"
+
+    # Idempotent
+    await gateway.aclose()
+    assert len(close_sequence) == 2

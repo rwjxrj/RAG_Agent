@@ -414,6 +414,8 @@ class Settings(BaseSettings):
 
     # LLM fallback & caching
     llm_fallback_model: str = Field(default="gpt-3.5-turbo", description="Fallback model on primary failure")
+    llm_fallback_api_key: str = Field(default="", description="Fallback LLM API key; empty = use primary llm_api_key")
+    llm_fallback_base_url: str = Field(default="", description="Fallback LLM base URL; empty = use primary llm_base_url")
     llm_model_economy: str = Field(
         default="gpt-4o-mini",
         description="Economy model for non-critical tasks (normalizer, decision_router, evidence_evaluator, final_polish)",

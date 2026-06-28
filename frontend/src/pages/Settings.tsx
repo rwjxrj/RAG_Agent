@@ -241,6 +241,8 @@ export default function Settings() {
   const [llmFallbackModel, setLlmFallbackModel] = useState('')
   const [llmApiKey, setLlmApiKey] = useState('')
   const [llmBaseUrl, setLlmBaseUrl] = useState('')
+  const [llmFallbackApiKey, setLlmFallbackApiKey] = useState('')
+  const [llmFallbackBaseUrl, setLlmFallbackBaseUrl] = useState('')
   const [llmProviderPreset, setLlmProviderPreset] = useState<LlmProviderPresetKey>('custom')
 
   const [embeddingProvider, setEmbeddingProvider] = useState<'openai' | 'custom' | 'ollama'>('openai')
@@ -350,6 +352,8 @@ export default function Settings() {
         setLlmFallbackModel(llmData.llm_fallback_model)
         setLlmApiKey(llmData.llm_api_key)
         setLlmBaseUrl(llmData.llm_base_url)
+        setLlmFallbackApiKey(llmData.llm_fallback_api_key)
+        setLlmFallbackBaseUrl(llmData.llm_fallback_base_url)
         setLlmProviderPreset(detectLlmProviderPreset(llmData.llm_base_url, llmData.llm_model))
       } else if (section === 'embedding') {
         const embeddingData = await admin.getEmbeddingConfig()
@@ -405,6 +409,15 @@ export default function Settings() {
     e.preventDefault()
     setError(null)
     setSuccess(null)
+
+    // Client-side validation: fallback API key and Base URL must be both filled or both empty
+    const fbKey = llmFallbackApiKey.trim()
+    const fbUrl = llmFallbackBaseUrl.trim()
+    if ((fbUrl && !fbKey) || (fbKey && !fbUrl)) {
+      setError('备用 API key 和备用 Base URL 必须同时填写才能切换供应商；缺一不可。')
+      return
+    }
+
     setSaving(true)
     try {
       await admin.updateLLMConfig({
@@ -412,6 +425,8 @@ export default function Settings() {
         llm_fallback_model: llmFallbackModel.trim(),
         llm_api_key: llmApiKey,
         llm_base_url: llmBaseUrl.trim(),
+        llm_fallback_api_key: fbKey === '' ? '' : (fbKey || undefined),
+        llm_fallback_base_url: fbUrl === '' ? '' : (fbUrl || undefined),
       })
       setSuccess('配置已保存，缓存已刷新。')
       const data = await admin.getLLMConfig()
@@ -419,6 +434,8 @@ export default function Settings() {
       setLlmFallbackModel(data.llm_fallback_model)
       setLlmApiKey(data.llm_api_key)
       setLlmBaseUrl(data.llm_base_url)
+      setLlmFallbackApiKey(data.llm_fallback_api_key)
+      setLlmFallbackBaseUrl(data.llm_fallback_base_url)
       setLlmProviderPreset(detectLlmProviderPreset(data.llm_base_url, data.llm_model))
       markSaved('llm')
     } catch (e) {
@@ -722,6 +739,48 @@ export default function Settings() {
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               disabled={saving}
             />
+          </div>
+          <div className="border-t border-zinc-700/50 pt-4 mt-2">
+            <details className="group">
+              <summary className="text-xs font-medium text-zinc-400 cursor-pointer hover:text-zinc-300 transition-colors select-none">
+                备用模型凭证（可选） — 不同供应商需独立 API key 和 Base URL
+              </summary>
+              <div className="mt-3 space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-500 mb-1.5 flex items-center gap-1.5">
+                    <Key size={12} />
+                    备用 API key
+                  </label>
+                  <input
+                    type="password"
+                    value={llmFallbackApiKey}
+                    onChange={(e) => setLlmFallbackApiKey(e.target.value)}
+                    placeholder="sk-..."
+                    className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
+                    disabled={saving}
+                    autoComplete="off"
+                  />
+                  <p className="text-xs text-zinc-500 mt-1">留空则回退到主 API key，但不会发送到不同供应商</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-500 mb-1.5 flex items-center gap-1.5">
+                    <Link2 size={12} />
+                    备用 Base URL
+                  </label>
+                  <input
+                    type="url"
+                    value={llmFallbackBaseUrl}
+                    onChange={(e) => setLlmFallbackBaseUrl(e.target.value)}
+                    placeholder="https://api.deepseek.com/v1"
+                    className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
+                    disabled={saving}
+                  />
+                  <p className="text-xs text-zinc-500 mt-1">
+                    必须同时填写备用 API key 和备用 Base URL 才能切换到不同供应商；仅填 Base URL 不会生效（防止 key 泄漏）
+                  </p>
+                </div>
+              </div>
+            </details>
           </div>
           <div>
             <label className="block text-xs font-medium text-zinc-500 mb-1.5 flex items-center gap-1.5">

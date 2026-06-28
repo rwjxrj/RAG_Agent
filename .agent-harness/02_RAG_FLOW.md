@@ -146,6 +146,9 @@ flowchart TD
 - 每次 LLM 调用必须通过作用域化的 `llm_task_context()` 设置 `task` 标签，调用结束后恢复上一个标签，避免 normalizer、evidence_evaluator、evidence_quality、generate 等任务在评测追踪中串台。
 - `LLMGateway` 会根据 `current_llm_task_var` 为结构化任务自动透传 `response_format={"type":"json_object"}`，覆盖 normalizer、evidence_quality、evidence_selector、generate_reasoning、generate 等需要 JSON 解析的调用；该参数也会进入 LLM 缓存 key，避免 JSON/非 JSON 请求共用缓存。如果 OpenAI-compatible 网关明确拒绝 `response_format` 参数，同一模型会去掉该参数重试一次，作为 prompt-only 兼容降级。
 - `debug_metadata.retry_count` 返回实际发生的检索重试次数，不改变 RAG 分支逻辑。
+- `LLMGateway` 支持为 fallback model 配置独立的 API key 和 Base URL。当 `llm_fallback_api_key` 与 `llm_fallback_base_url` 同时为非空时，fallback attempt 使用独立 `AsyncOpenAI` 客户端；任一字段缺失时，当前实现继续使用主客户端请求 fallback model，不会把主 API key 发送到另一个 Base URL。
+- 管理后台的 LLM 配置接口与设置页可以读写上述两个 fallback 字段。当前实现尚未在保存阶段强制校验两个字段必须成对提供，因此不完整配置会静默退回主客户端；修复任务记录在 `.scratch/llm-fallback-provider-hardening/issues/`。
+- 当前 LLM 响应缓存 key 仍以主请求模型、消息和生成参数为主，未区分 fallback provider 端点；独立 fallback 客户端的显式关闭和缓存隔离也属于待修复项。
 - `debug_metadata.agentic_router` 是可选字段：intent cache 命中时只标记 `skipped=true` 和 `reason=intent_cache_hit`；Router 执行时记录 `route`、`tool`、`reason`、`confidence`、`skipped` 和 `fallback_to_rag`。顶层 API 字段不因该字段改变。
 - `debug_metadata.trace` 是可选执行快照：记录 intent、Agentic Router 选择、稳定逻辑节点路径、工具摘要和毫秒级耗时，用于前端流程可视化和调试，不改变 RAG 决策、答案生成或顶层 API 字段。
 

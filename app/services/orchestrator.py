@@ -233,6 +233,7 @@ class PipelineRunner:
         if retrieval is None:
             from app.services.retrieval import RetrievalService
             retrieval = RetrievalService()
+        owns_llm = llm is None
         if llm is None:
             from app.services.llm_gateway import get_llm_gateway
             llm = get_llm_gateway()
@@ -252,6 +253,7 @@ class PipelineRunner:
             from app.services.language_detect import detect_language
             language_detector = detect_language
         self._settings = get_settings()
+        self._owns_llm = owns_llm  # True 表示 PipelineRunner 自己创建了网关
         self._retrieval = retrieval
         self._llm = llm
         self._reviewer = reviewer
@@ -1009,52 +1011,56 @@ class PipelineRunner:
         # End-to-end pipeline timeout protection
         timeout_s = float(getattr(self._settings, "pipeline_timeout_seconds", 120.0) or 0)
         try:
-            if timeout_s > 0:
-                output = await asyncio.wait_for(self._run_context(ctx), timeout=timeout_s)
-            else:
-                output = await self._run_context(ctx)
-        except asyncio.TimeoutError:
-            logger.warning("pipeline_timeout", trace_id=trace_id, timeout_s=timeout_s)
-            ctx.termination_reason = "pipeline_timeout"
-            ctx.state = OrchestratorState.COMPLETE
-            from app.services.schemas import AnswerOutput
-            output = AnswerOutput(
-                decision="ESCALATE",
-                answer="处理超时，请稍后重试。",
-                followup_questions=[],
-                citations=[],
-                confidence=0.0,
-                debug={"pipeline_timeout": True, "timeout_seconds": timeout_s},
+            try:
+                if timeout_s > 0:
+                    output = await asyncio.wait_for(self._run_context(ctx), timeout=timeout_s)
+                else:
+                    output = await self._run_context(ctx)
+            except asyncio.TimeoutError:
+                logger.warning("pipeline_timeout", trace_id=trace_id, timeout_s=timeout_s)
+                ctx.termination_reason = "pipeline_timeout"
+                ctx.state = OrchestratorState.COMPLETE
+                from app.services.schemas import AnswerOutput
+                output = AnswerOutput(
+                    decision="ESCALATE",
+                    answer="处理超时，请稍后重试。",
+                    followup_questions=[],
+                    citations=[],
+                    confidence=0.0,
+                    debug={"pipeline_timeout": True, "timeout_seconds": timeout_s},
+                )
+            if not ctx.early_output and not ctx.skip_retrieval:
+                trace.complete_node("retrieve")
+                trace.complete_node("assess_evidence")
+                if ctx.retrieval_attempt > 1:
+                    trace.complete_node("retry")
+                trace.complete_node("generate")
+                trace.complete_node("verify")
+            timings = dict(ctx.orchestrator_debug.phase_timings)
+            timings["total"] = time.perf_counter() - total_started
+            normalized_timings = format_phase_timings(timings)
+            output.debug = output.debug or {}
+            output.debug["timings"] = normalized_timings
+            output.debug.update(normalized_timings)
+            output.debug["retry_count"] = max(0, int(ctx.retrieval_attempt or 0))
+            if ctx.retry_diagnostics:
+                output.debug["retry_diagnostics"] = ctx.retry_diagnostics
+            if ctx.orchestrator_debug.convergence_reason:
+                output.debug["convergence_reason"] = ctx.orchestrator_debug.convergence_reason
+            if ctx.agentic_debug:
+                output.debug["agentic_router"] = ctx.agentic_debug
+            trace.set_tool_result(
+                decision=output.decision,
+                citations_count=len(output.citations or []),
+                followup_count=len(output.followup_questions or []),
+                confidence=output.confidence,
             )
-        if not ctx.early_output and not ctx.skip_retrieval:
-            trace.complete_node("retrieve")
-            trace.complete_node("assess_evidence")
-            if ctx.retrieval_attempt > 1:
-                trace.complete_node("retry")
-            trace.complete_node("generate")
-            trace.complete_node("verify")
-        timings = dict(ctx.orchestrator_debug.phase_timings)
-        timings["total"] = time.perf_counter() - total_started
-        normalized_timings = format_phase_timings(timings)
-        output.debug = output.debug or {}
-        output.debug["timings"] = normalized_timings
-        output.debug.update(normalized_timings)
-        output.debug["retry_count"] = max(0, int(ctx.retrieval_attempt or 0))
-        if ctx.retry_diagnostics:
-            output.debug["retry_diagnostics"] = ctx.retry_diagnostics
-        if ctx.orchestrator_debug.convergence_reason:
-            output.debug["convergence_reason"] = ctx.orchestrator_debug.convergence_reason
-        if ctx.agentic_debug:
-            output.debug["agentic_router"] = ctx.agentic_debug
-        trace.set_tool_result(
-            decision=output.decision,
-            citations_count=len(output.citations or []),
-            followup_count=len(output.followup_questions or []),
-            confidence=output.confidence,
-        )
-        trace.set_latency(normalized_timings)
-        output.debug["trace"] = trace.to_debug()
-        return output
+            trace.set_latency(normalized_timings)
+            output.debug["trace"] = trace.to_debug()
+            return output
+        finally:
+            if self._owns_llm and hasattr(self._llm, "aclose"):
+                await self._llm.aclose()
 
 
 # Transitional import compatibility. PipelineRunner is the sole implementation.
