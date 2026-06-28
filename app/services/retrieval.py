@@ -134,6 +134,29 @@ class RetrievalService:
         self._embedding_semaphore = asyncio.Semaphore(
             self._int_setting("retrieval_embedding_max_concurrency", 24)
         )
+        self._owns_opensearch = opensearch is None
+        self._owns_qdrant = qdrant is None
+
+    async def aclose(self) -> None:
+        """Close owned clients (idempotent)."""
+        if self._owns_opensearch and hasattr(self._opensearch, "close"):
+            try:
+                await self._opensearch.close()
+            except Exception:
+                pass
+            self._owns_opensearch = False
+        if self._owns_qdrant and hasattr(self._qdrant, "close"):
+            try:
+                await self._qdrant.close()
+            except Exception:
+                pass
+            self._owns_qdrant = False
+
+    async def __aenter__(self) -> "RetrievalService":
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        await self.aclose()
 
     def _int_setting(self, name: str, default: int) -> int:
         try:

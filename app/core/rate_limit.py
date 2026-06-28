@@ -62,7 +62,7 @@ async def rate_limit_middleware(request: Request, call_next: Callable):
         count = results[2]
 
         if count > limit:
-            await r.close()
+            await r.aclose()
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"Rate limit exceeded. Try again in {window} seconds.",
@@ -73,7 +73,7 @@ async def rate_limit_middleware(request: Request, call_next: Callable):
         logger.warning("rate_limit_error", error=str(e))
     finally:
         try:
-            await r.close()
+            await r.aclose()
         except Exception:
             pass
 

@@ -34,6 +34,7 @@ class FakeOrchestrator(PipelineRunner):
     def __init__(self, output: AnswerOutput | None = None):
         self.output = output
         self.calls = []
+        self._owns_llm = False  # Prevent PipelineRunner from closing external gateway
 
     def configure(self, router):
         from app.services import answer_service as answer_service_module
@@ -772,3 +773,262 @@ async def test_lightweight_llm_log_flows_into_debug_output(monkeypatch):
         "cost_usd",
     ):
         assert heavy_field not in record
+
+
+# ---------------------------------------------------------------------------
+# Resource lifecycle tests: AnswerService must close owned LLM gateway
+# ---------------------------------------------------------------------------
+
+
+class FakeLLMGateway:
+    """Fake gateway that tracks aclose calls."""
+
+    def __init__(self):
+        self.close_count = 0
+        self._closed = False
+
+    async def chat(self, messages, temperature=0.1, **kwargs):
+        from app.services.llm_gateway import LLMResponse
+        return LLMResponse(
+            content="ok",
+            model="fake",
+            provider="fake",
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    async def aclose(self):
+        self.close_count += 1
+        self._closed = True
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.aclose()
+
+
+@pytest.mark.asyncio
+async def test_answer_service_closes_owned_llm_gateway_on_aclose():
+    """AnswerService must close LLM gateway it created (no external llm param)."""
+    service = AnswerService(
+        retrieval=object(),
+        llm=None,  # Will be created internally via get_llm_gateway
+        reviewer=object(),
+        runner=FakeOrchestrator(),
+        agentic_router=FakeRouter(
+            AgenticRouterDecision(
+                route=AgenticRoute.RAG_SEARCH,
+                tool="rag_search",
+                reason="test",
+                confidence=0.8,
+            )
+        ),
+    )
+
+    # Replace the internal gateway with a fake to track close calls
+    fake_gateway = FakeLLMGateway()
+    service._llm = fake_gateway
+    service._owns_llm = True
+
+    await service.aclose()
+    assert fake_gateway.close_count == 1
+    assert fake_gateway._closed is True
+
+    # Idempotent: second aclose should not call again
+    await service.aclose()
+    assert fake_gateway.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_answer_service_does_not_close_external_llm_gateway():
+    """AnswerService must NOT close externally provided LLM gateway."""
+    external_gateway = FakeLLMGateway()
+    service = AnswerService(
+        retrieval=object(),
+        llm=external_gateway,  # Externally provided
+        reviewer=object(),
+        runner=FakeOrchestrator(),
+        agentic_router=FakeRouter(
+            AgenticRouterDecision(
+                route=AgenticRoute.RAG_SEARCH,
+                tool="rag_search",
+                reason="test",
+                confidence=0.8,
+            )
+        ),
+    )
+
+    assert service._owns_llm is False
+    await service.aclose()
+    assert external_gateway.close_count == 0
+    assert external_gateway._closed is False
+
+
+@pytest.mark.asyncio
+async def test_answer_service_closes_owned_retrieval():
+    """AnswerService should close retrieval it created (not externally provided)."""
+
+    class FakeOpenSearch:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    class FakeRetrieval:
+        def __init__(self):
+            self._opensearch = FakeOpenSearch()
+            self._owns_opensearch = True
+            self._owns_qdrant = False
+
+        async def aclose(self):
+            if self._owns_opensearch:
+                await self._opensearch.close()
+                self._owns_opensearch = False
+
+    fake_retrieval = FakeRetrieval()
+    service = AnswerService(
+        retrieval=fake_retrieval,
+        llm=object(),
+        reviewer=object(),
+        runner=FakeOrchestrator(),
+        agentic_router=FakeRouter(
+            AgenticRouterDecision(
+                route=AgenticRoute.RAG_SEARCH,
+                tool="rag_search",
+                reason="test",
+                confidence=0.8,
+            )
+        ),
+    )
+    assert service._owns_retrieval is False
+    await service.aclose()
+    assert fake_retrieval._opensearch.closed is False
+
+
+@pytest.mark.asyncio
+async def test_answer_service_aclose_is_idempotent():
+    """Multiple aclose() calls should not raise."""
+
+    class FakeGateway:
+        def __init__(self):
+            self.close_count = 0
+
+        async def aclose(self):
+            self.close_count += 1
+
+    gateway = FakeGateway()
+    service = AnswerService(
+        retrieval=object(),
+        llm=gateway,
+        reviewer=object(),
+        runner=FakeOrchestrator(),
+        agentic_router=FakeRouter(
+            AgenticRouterDecision(
+                route=AgenticRoute.RAG_SEARCH,
+                tool="rag_search",
+                reason="test",
+                confidence=0.8,
+            )
+        ),
+    )
+    assert service._owns_llm is False
+    await service.aclose()
+    await service.aclose()
+    await service.aclose()
+    assert gateway.close_count == 0
+
+
+@pytest.mark.asyncio
+async def test_retrieval_service_aclose_closes_owned_opensearch():
+    """RetrievalService should close owned OpenSearch client."""
+
+    class FakeOpenSearch:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    from app.services.retrieval import RetrievalService
+
+    fake_os = FakeOpenSearch()
+    svc = RetrievalService(opensearch=fake_os, qdrant=object(), embedding_provider=object(), reranker=object())
+    svc._owns_opensearch = True
+
+    await svc.aclose()
+    assert fake_os.closed is True
+    assert svc._owns_opensearch is False
+
+
+@pytest.mark.asyncio
+async def test_retrieval_service_aclose_skips_external_opensearch():
+    """RetrievalService should NOT close externally provided OpenSearch client."""
+
+    class FakeOpenSearch:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    from app.services.retrieval import RetrievalService
+
+    fake_os = FakeOpenSearch()
+    svc = RetrievalService(opensearch=fake_os, qdrant=object(), embedding_provider=object(), reranker=object())
+    svc._owns_opensearch = False
+
+    await svc.aclose()
+    assert fake_os.closed is False
+
+
+@pytest.mark.asyncio
+async def test_answer_service_context_manager_closes_owned_gateway():
+    """async with AnswerService() must close owned gateway on exit."""
+    fake_gateway = FakeLLMGateway()
+
+    async with AnswerService(
+        retrieval=object(),
+        llm=None,
+        reviewer=object(),
+        runner=FakeOrchestrator(),
+        agentic_router=FakeRouter(
+            AgenticRouterDecision(
+                route=AgenticRoute.RAG_SEARCH,
+                tool="rag_search",
+                reason="test",
+                confidence=0.8,
+            )
+        ),
+    ) as service:
+        service._llm = fake_gateway
+        service._owns_llm = True
+
+    assert fake_gateway.close_count == 1
+    assert fake_gateway._closed is True
+
+
+@pytest.mark.asyncio
+async def test_answer_service_context_manager_does_not_close_external_gateway():
+    """async with AnswerService(llm=ext) must NOT close external gateway."""
+    external_gateway = FakeLLMGateway()
+
+    async with AnswerService(
+        retrieval=object(),
+        llm=external_gateway,
+        reviewer=object(),
+        runner=FakeOrchestrator(),
+        agentic_router=FakeRouter(
+            AgenticRouterDecision(
+                route=AgenticRoute.RAG_SEARCH,
+                tool="rag_search",
+                reason="test",
+                confidence=0.8,
+            )
+        ),
+    ) as service:
+        pass
+
+    assert external_gateway.close_count == 0
+    assert external_gateway._closed is False

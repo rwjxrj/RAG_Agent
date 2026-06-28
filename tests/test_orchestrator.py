@@ -11,7 +11,7 @@ from app.services.orchestrator import (
     PhaseResult,
 )
 from app.services.reviewer import ReviewerResult, ReviewerStatus
-from app.services.schemas import DecisionResult, QuerySpec, VerifyPhaseOutput
+from app.services.schemas import DecisionResult, QuerySpec, ReviewResult, VerifyPhaseOutput
 from app.services.evidence_quality import QualityReport
 
 
@@ -310,7 +310,108 @@ def test_next_action_retrying_returns_retrieve():
     assert orch.next_action(ctx) == OrchestratorAction.RETRIEVE
 
 
-def test_context_add_stage_reason():
+def test_retry_retrieve_clears_review_result():
+    """RETRY_RETRIEVE should clear review_result to prevent stale lane override."""
+    orch = Orchestrator()
+    ctx = _ctx(
+        OrchestratorState.REVIEWING,
+        retrieval_attempt=0,
+        max_attempts=2,
+    )
+    ctx.review_result = ReviewResult(
+        status="ask_user",
+        unsupported_claims=[],
+        weakly_supported_claims=[],
+        claim_to_citation_map={},
+        reviewer_notes=[],
+        final_lane="ASK_USER",
+    )
+    ctx.decision_result = DecisionResult(
+        decision="PASS",
+        reason="evidence passed",
+        clarifying_questions=[],
+        partial_links=[],
+        lane="CANDIDATE_VERIFY",
+    )
+
+    orch._apply_result(ctx, OrchestratorAction.RETRY_RETRIEVE, PhaseResult())
+
+    assert ctx.review_result is None
+    assert ctx.decision_result is None
+    assert ctx.retrieval_attempt == 1
+    assert ctx.state == OrchestratorState.RETRYING
+
+
+def test_current_lane_prefers_decision_result_after_retry():
+    """After retry clears review_result, decision_result should take precedence."""
+    ctx = _ctx()
+    ctx.review_result = None
+    ctx.decision_result = DecisionResult(
+        decision="PASS",
+        reason="evidence passed",
+        clarifying_questions=[],
+        partial_links=[],
+        lane="CANDIDATE_VERIFY",
+    )
+    assert ctx.current_lane() == "CANDIDATE_VERIFY"
+
+
+def test_targeted_retry_end_to_end_state_transition():
+    """Full state machine path: Reviewer ASK_USER → RETRY_RETRIEVE → DECIDE=CANDIDATE_VERIFY → GENERATE."""
+    orch = Orchestrator()
+    
+    ctx = _ctx(
+        OrchestratorState.REVIEWING,
+        retrieval_attempt=0,
+        max_attempts=3,
+    )
+    
+    ctx.review_result = ReviewResult(
+        status="ask_user",
+        unsupported_claims=["claim1"],
+        weakly_supported_claims=[],
+        claim_to_citation_map={},
+        reviewer_notes=["type mismatch"],
+        final_lane="ASK_USER",
+    )
+    ctx.verify_output.targeted_retry_pending = True
+    ctx.verify_output.targeted_retry_used = True
+    ctx.retry_query_override = "better query"
+    
+    assert ctx.current_lane() == "ASK_USER"
+    
+    next_act = orch.next_action(ctx, reviewer_status="ASK_USER")
+    assert next_act == OrchestratorAction.RETRY_RETRIEVE
+    
+    orch._apply_result(ctx, OrchestratorAction.RETRY_RETRIEVE, PhaseResult())
+    
+    assert ctx.state == OrchestratorState.RETRYING
+    assert ctx.review_result is None
+    assert ctx.decision_result is None
+    assert ctx.retrieval_attempt == 1
+    
+    next_act = orch.next_action(ctx)
+    assert next_act == OrchestratorAction.RETRIEVE
+    
+    ctx.state = OrchestratorState.ASSESSING
+    ctx.passes_quality_gate = True
+    
+    next_act = orch.next_action(ctx, has_evidence=True)
+    assert next_act == OrchestratorAction.DECIDE
+    
+    ctx.state = OrchestratorState.DECIDING
+    ctx.decision_result = DecisionResult(
+        decision="PASS",
+        reason="evidence now sufficient",
+        clarifying_questions=[],
+        partial_links=[],
+        lane="CANDIDATE_VERIFY",
+    )
+    
+    assert ctx.current_lane() == "CANDIDATE_VERIFY"
+    
+    next_act = orch.next_action(ctx)
+    assert next_act == OrchestratorAction.GENERATE
     ctx = _ctx()
     ctx.add_stage_reason("understand", "query_spec_ready")
     ctx.add_stage_reason("retrieve", "chunks=5")

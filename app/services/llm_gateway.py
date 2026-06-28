@@ -585,7 +585,7 @@ class OpenAIGateway(LLMGateway):
         finally:
             if r is not None:
                 try:
-                    await r.close()
+                    await r.aclose()
                 except Exception:
                     pass
 
@@ -609,7 +609,7 @@ class OpenAIGateway(LLMGateway):
         finally:
             if r is not None:
                 try:
-                    await r.close()
+                    await r.aclose()
                 except Exception:
                     pass
 
@@ -634,7 +634,7 @@ async def clear_llm_cache() -> dict[str, int]:
     finally:
         if r is not None:
             try:
-                await r.close()
+                await r.aclose()
             except Exception:
                 pass
 
@@ -674,7 +674,7 @@ async def purge_empty_llm_cache() -> dict[str, int]:
     finally:
         if r is not None:
             try:
-                await r.close()
+                await r.aclose()
             except Exception:
                 pass
 

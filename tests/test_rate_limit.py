@@ -88,7 +88,7 @@ async def test_rate_limit_middleware_still_limits_non_admin(monkeypatch):
         def pipeline(self):
             return FakePipeline()
 
-        async def close(self):
+        async def aclose(self):
             return None
 
     monkeypatch.setattr(

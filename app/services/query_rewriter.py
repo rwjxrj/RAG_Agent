@@ -105,7 +105,7 @@ async def _get_cached(key: str) -> QueryRewriteResult | None:
         import redis.asyncio as redis
         r = redis.from_url(settings.redis_url, decode_responses=True)
         data = await r.get(f"query_rewriter:{key}")
-        await r.close()
+        await r.aclose()
         if data:
             return _deserialize_result(data)
     except Exception as e:
@@ -123,7 +123,7 @@ async def _set_cached(key: str, result: QueryRewriteResult) -> None:
         import redis.asyncio as redis
         r = redis.from_url(settings.redis_url, decode_responses=True)
         await r.setex(f"query_rewriter:{key}", ttl, _serialize_result(result))
-        await r.close()
+        await r.aclose()
     except Exception as e:
         logger.debug("query_rewriter_cache_set_failed", error=str(e))
 
@@ -141,7 +141,7 @@ async def clear_cache() -> dict[str, int | bool]:
         deleted = 0
         if keys:
             deleted = int(await r.delete(*keys))
-        await r.close()
+        await r.aclose()
         logger.info("query_rewriter_cache_cleared", deleted_keys=deleted)
         return {"enabled": True, "deleted_keys": deleted}
     except Exception as e:

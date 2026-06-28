@@ -155,7 +155,7 @@ async def test_clear_cache_deletes_query_rewriter_namespace(monkeypatch):
             assert keys == ("query_rewriter:a", "query_rewriter:b")
             return 2
 
-        async def close(self):
+        async def aclose(self):
             self.closed = True
 
     fake_redis = FakeRedis()

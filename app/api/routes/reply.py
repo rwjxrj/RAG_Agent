@@ -39,12 +39,12 @@ async def generate_suggested_reply(
     history = truncate_for_pipeline(body.conversation_history or [])
     trace_id = get_trace_id()
 
-    answer_svc = AnswerService()
-    output = await answer_svc.generate(
-        query=query,
-        conversation_history=history if history else None,
-        trace_id=trace_id,
-    )
+    async with AnswerService() as answer_svc:
+        output = await answer_svc.generate(
+            query=query,
+            conversation_history=history if history else None,
+            trace_id=trace_id,
+        )
 
     citations = [
         CitationSchema(

@@ -351,7 +351,7 @@ async def test_clear_llm_cache_deletes_llm_namespace(monkeypatch):
             assert keys == (b"llm_cache:a", b"llm_cache:b", b"llm_cache:c")
             return 3
 
-        async def close(self):
+        async def aclose(self):
             self.closed = True
 
     fake_redis = FakeRedis()
@@ -390,7 +390,7 @@ async def test_cached_empty_content_is_purged_and_returns_none(monkeypatch):
         async def delete(self, key):
             self.deleted_keys.append(key)
 
-        async def close(self):
+        async def aclose(self):
             self.closed = True
 
     fake_redis = FakeRedis()
@@ -455,7 +455,7 @@ async def test_set_cached_rejects_empty_content(monkeypatch):
         async def setex(self, key, ttl, value):
             set_calls.append(key)
 
-        async def close(self):
+        async def aclose(self):
             pass
 
     fake_redis = FakeRedis()

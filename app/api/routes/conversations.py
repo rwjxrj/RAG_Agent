@@ -224,19 +224,19 @@ async def send_message(
     conversation_history = truncate_for_pipeline(raw_history)
 
     # Generate answer (tickets are retrieved via vector/RAG like docs when relevant)
-    answer_svc = AnswerService()
-    trace_id = get_trace_id()
-    try:
-        from app.core.logging import get_logger
-        from app.services.flow_debug import _pipeline_log
-        _pipeline_log("api", "message_received", conversation_id=conversation_id, trace_id=trace_id)
-    except Exception:
-        pass
-    output = await answer_svc.generate(
-        query=content,
-        conversation_history=conversation_history,
-        trace_id=trace_id,
-    )
+    async with AnswerService() as answer_svc:
+        trace_id = get_trace_id()
+        try:
+            from app.core.logging import get_logger
+            from app.services.flow_debug import _pipeline_log
+            _pipeline_log("api", "message_received", conversation_id=conversation_id, trace_id=trace_id)
+        except Exception:
+            pass
+        output = await answer_svc.generate(
+            query=content,
+            conversation_history=conversation_history,
+            trace_id=trace_id,
+        )
 
     # Save assistant message (with full flow debug: decision, confidence, followup, etc.)
     debug_meta = dict(output.debug or {})
@@ -334,18 +334,28 @@ async def send_message_stream(
             conversation_history = truncate_for_pipeline(raw_history)
 
             answer_svc = AnswerService()
-            generate_task = asyncio.create_task(
-                answer_svc.generate(
-                    query=content,
-                    conversation_history=conversation_history,
-                    trace_id=get_trace_id(),
+            generate_task = None
+            try:
+                generate_task = asyncio.create_task(
+                    answer_svc.generate(
+                        query=content,
+                        conversation_history=conversation_history,
+                        trace_id=get_trace_id(),
+                    )
                 )
-            )
-            yield sse({"type": "status", "data": "started"})
-            while not generate_task.done():
-                yield sse({"type": "ping", "data": "working"})
-                await asyncio.sleep(10)
-            output = await generate_task
+                yield sse({"type": "status", "data": "started"})
+                while not generate_task.done():
+                    yield sse({"type": "ping", "data": "working"})
+                    await asyncio.sleep(10)
+                output = await generate_task
+            finally:
+                if generate_task is not None and not generate_task.done():
+                    generate_task.cancel()
+                    try:
+                        await generate_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                await answer_svc.aclose()
 
             trace_snapshot = (output.debug or {}).get("trace")
             if isinstance(trace_snapshot, dict):

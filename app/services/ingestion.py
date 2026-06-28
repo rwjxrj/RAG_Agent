@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from html import unescape
 from typing import Any
 
@@ -311,7 +311,7 @@ class IngestionService:
             existing.effective_date = effective_date
             existing.doc_metadata = metadata
             existing.source_file = source_file
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
             await db_session.flush()
             await db_session.commit()
             return existing.id
@@ -335,7 +335,7 @@ class IngestionService:
             existing.cleaned_content = cleaned
             existing.doc_metadata = metadata
             existing.source_file = source_file
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
             await db_session.execute(delete(ChunkModel).where(ChunkModel.document_id == document_id))
         else:
             new_doc = Document(
