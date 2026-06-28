@@ -498,11 +498,71 @@ def build_answer_plan(
     )
 
 
+def _detect_query_language(query_text: str | None) -> str:
+    """Detect language directly from query text using character ranges.
+
+    Returns ISO 639-1 code: 'zh', 'ja', 'ko', or 'en'.
+    More reliable than trusting upstream source_lang which can be misdetected.
+    """
+    text = (query_text or "").strip()
+    if not text:
+        return "en"
+
+    zh_count = 0
+    ja_count = 0  # Hiragana/Katakana
+    ko_count = 0  # Hangul
+    for ch in text:
+        cp = ord(ch)
+        # CJK Unified Ideographs (shared by zh/ja)
+        if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
+            zh_count += 1
+        # Japanese Hiragana/Katakana
+        elif 0x3040 <= cp <= 0x309F or 0x30A0 <= cp <= 0x30FF:
+            ja_count += 1
+        # Korean Hangul
+        elif 0xAC00 <= cp <= 0xD7AF or 0x1100 <= cp <= 0x11FF:
+            ko_count += 1
+
+    # If Hiragana/Katakana present → Japanese
+    if ja_count > 0:
+        return "ja"
+    # If Hangul present → Korean
+    if ko_count > 0:
+        return "ko"
+    # If CJK characters present and no Japanese/Korean markers → Chinese
+    if zh_count > 0:
+        return "zh"
+    return "en"
+
+
+def _build_language_instruction(detected_lang: str) -> str:
+    """Build deterministic language instruction for prompt.
+
+    Returns a single, unambiguous language instruction to avoid conflicting
+    directives when upstream source_lang is misdetected.
+    """
+    lang_map = {
+        "zh": "Chinese (中文)",
+        "ja": "Japanese (日本語)",
+        "ko": "Korean (한국어)",
+        "en": "English",
+    }
+    target = lang_map.get(detected_lang, "English")
+    return f"LANGUAGE: You MUST respond entirely in {target}. Match the language of the user's question."
+
+
 def format_answer_plan_instruction(
     answer_plan: AnswerPlan,
     quality_report: QualityReport | None,
+    source_lang: str = "en",
+    query_text: str = "",
 ) -> str:
-    """Convert AnswerPlan into prompt instructions for AnswerCandidate JSON."""
+    """Convert AnswerPlan into prompt instructions for AnswerCandidate JSON.
+
+    Args:
+        source_lang: Upstream detected language (may be incorrect).
+        query_text: Original user query for direct language detection fallback.
+    """
     constraints = answer_plan.generation_constraints or {}
     target_mode = _sanitize_answer_mode(
         constraints.get("target_answer_mode"),
@@ -512,9 +572,14 @@ def format_answer_plan_instruction(
     target_answer_type = str(constraints.get("target_answer_type", "general")).strip() or "general"
     target_entity = constraints.get("target_entity")
 
+    # Detect language from query text directly; fall back to source_lang only
+    # when query text is empty (e.g., in unit tests).
+    detected_lang = _detect_query_language(query_text) if query_text else source_lang
+
     lines = [
         "ROUTING DECISION: CANDIDATE_VERIFY.",
         "Generate structured AnswerCandidate JSON in this pass. Do not output free-form prose.",
+        _build_language_instruction(detected_lang),
         "Return JSON only with this schema:",
         "{",
         '  "candidate": {',
@@ -585,8 +650,18 @@ def format_answer_plan_instruction(
 def apply_answer_plan(
     answer_plan: AnswerPlan,
     parsed: dict[str, Any],
+    *,
+    passes_quality_gate: bool = False,
+    upstream_decision: str = "",
+    risk_level: str = "low",
 ) -> tuple[str, str, list[str], float]:
-    """Apply answer-mode calibration after parsing the LLM response."""
+    """Apply answer-mode calibration after parsing the LLM response.
+
+    Args:
+        passes_quality_gate: Whether the quality gate passed for this query.
+        upstream_decision: Decision from the router (PASS, ASK_USER, ESCALATE).
+        risk_level: Risk level from QuerySpec ('low', 'medium', 'high').
+    """
     constraints = answer_plan.generation_constraints or {}
     target_mode = _sanitize_answer_mode(
         constraints.get("target_answer_mode"),
@@ -627,7 +702,35 @@ def apply_answer_plan(
         decision = "ASK_USER" if candidate_mode == "ASK_USER" else "PASS"
     if candidate_mode == "ASK_USER":
         decision = "ASK_USER"
-    elif decision != "ESCALATE":
+    elif decision == "ESCALATE":
+        # Only override ESCALATE to PASS when ALL conditions hold:
+        # 1. Quality gate passed (evidence is sufficient)
+        # 2. Risk level is not high (no safety concern)
+        # 3. Upstream router did not itself ESCALATE (e.g., high_risk_insufficient)
+        can_override_escalate = (
+            passes_quality_gate
+            and risk_level.lower() != "high"
+            and upstream_decision not in {"ESCALATE", ""}
+        )
+        if can_override_escalate and target_mode in {"PASS_EXACT", "PASS_PARTIAL"}:
+            decision = "PASS"
+            logger.info(
+                "generate_escalate_overridden",
+                target_mode=target_mode,
+                risk_level=risk_level,
+                upstream_decision=upstream_decision,
+                passes_quality_gate=passes_quality_gate,
+                reason="low_risk_gate_pass",
+            )
+        else:
+            logger.info(
+                "generate_escalate_preserved",
+                target_mode=target_mode,
+                risk_level=risk_level,
+                upstream_decision=upstream_decision,
+                passes_quality_gate=passes_quality_gate,
+            )
+    else:
         decision = "PASS"
 
     if candidate_mode == "PASS_PARTIAL" and answer.strip():

@@ -67,6 +67,7 @@ async def execute_verify(ctx: OrchestratorContext, *, reviewer) -> VerifyResult:
             if isinstance(ctx.generate_output.answer_candidate, dict)
             else None
         ),
+        passes_quality_gate=bool(ctx.passes_quality_gate),
     )
     status = getattr(reviewer_result, "status", None)
     hypothesis_judge = _run_hypothesis_judge(ctx)

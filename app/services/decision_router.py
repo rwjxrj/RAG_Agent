@@ -1,5 +1,7 @@
 """Decision Router: deterministic ambiguity/risk routing before generation."""
 
+import re
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.search.base import EvidenceChunk
@@ -87,12 +89,54 @@ def _get_refinement_questions(query_spec: QuerySpec | None) -> list[str]:
     return questions[:1]
 
 
-def _requires_blocking_clarification(query_spec: QuerySpec | None) -> bool:
+def _requires_blocking_clarification(
+    query_spec: QuerySpec | None,
+    passes_quality_gate: bool = False,
+) -> bool:
     if not query_spec:
         return False
     if query_spec.clarification_needs.answerable_without_clarification is False:
+        if passes_quality_gate and _has_strong_business_signal(query_spec):
+            return False
         return True
     return bool(query_spec.query_intent.is_ambiguous and not _get_refinement_questions(query_spec))
+
+
+# Chinese keywords — use substring matching (no word boundary issue)
+_STRONG_BUSINESS_KEYWORDS_CN = frozenset({
+    "地址", "门牌", "发货", "邮寄", "快递", "收货", "寄送",
+})
+
+# English keywords — use word-boundary matching to avoid false positives
+# (e.g., "mail" matching "email", "send" matching "sender")
+# Note: "send" and "mail" are excluded because they are too generic and
+# match non-logistics contexts like "send me a link" or "email setup".
+_STRONG_BUSINESS_KEYWORDS_EN_PATTERNS = [
+    re.compile(r"\baddress\b", re.IGNORECASE),
+    re.compile(r"\bshipping\b", re.IGNORECASE),
+    re.compile(r"\bdelivery\b", re.IGNORECASE),
+    re.compile(r"\bdeliver\b", re.IGNORECASE),
+]
+
+
+def _has_strong_business_signal(query_spec: QuerySpec) -> bool:
+    """Check if query contains strong address/logistics business signals.
+
+    Uses substring matching for Chinese keywords and word-boundary matching
+    for English keywords to avoid false positives (e.g., 'email' matching 'mail').
+    """
+    query = (query_spec.original_query or "").lower()
+    if not query:
+        query = " ".join(query_spec.semantic_queries or []).lower()
+    if not query:
+        return False
+
+    # Chinese keywords: substring match (safe for CJK)
+    if any(kw in query for kw in _STRONG_BUSINESS_KEYWORDS_CN):
+        return True
+
+    # English keywords: word-boundary match
+    return any(pattern.search(query) for pattern in _STRONG_BUSINESS_KEYWORDS_EN_PATTERNS)
 
 
 def _should_use_partial_lane(
@@ -174,7 +218,7 @@ def route(
     """
     _ = required_evidence
 
-    if _requires_blocking_clarification(query_spec):
+    if _requires_blocking_clarification(query_spec, passes_quality_gate=passes_quality_gate):
         return DecisionResult(
             decision="ASK_USER",
             reason="ambiguous_query",

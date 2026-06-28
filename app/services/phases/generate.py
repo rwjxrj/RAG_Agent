@@ -447,7 +447,7 @@ async def execute_generate(
     system_prompt = get_system_prompt()
     system_prompt = (
         f"{system_prompt}\n\n"
-        f"{format_answer_plan_instruction(answer_plan, ctx.quality_report)}"
+        f"{format_answer_plan_instruction(answer_plan, ctx.quality_report, source_lang=ctx.source_lang, query_text=ctx.effective_query or ctx.query)}"
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if ctx.conversation_history:
@@ -476,9 +476,14 @@ async def execute_generate(
         logger.warning("llm_response_truncated", trace_id=ctx.trace_id)
 
     parsed = parse_llm_response(llm_resp.content)
+    _upstream_decision = (ctx.decision_result.decision if ctx.decision_result else "") or ""
+    _risk_level = (ctx.query_spec.query_intent.risk_level if ctx.query_spec else "low") or "low"
     decision, answer, followup, confidence = apply_answer_plan(
         answer_plan,
         parsed,
+        passes_quality_gate=bool(ctx.passes_quality_gate),
+        upstream_decision=_upstream_decision,
+        risk_level=_risk_level,
     )
     citations = parsed.get("citations", [])
 
@@ -531,7 +536,10 @@ async def execute_generate(
                         )
                     parsed = parse_llm_response(llm_resp.content)
                     decision, answer, followup, confidence = apply_answer_plan(
-                        answer_plan, parsed
+                        answer_plan, parsed,
+                        passes_quality_gate=bool(ctx.passes_quality_gate),
+                        upstream_decision=_upstream_decision,
+                        risk_level=_risk_level,
                     )
                     citations = parsed.get("citations", [])
                 except Exception as err:

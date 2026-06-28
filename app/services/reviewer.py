@@ -222,6 +222,7 @@ class AnswerCalibrator:
         evidence: list[EvidenceChunk],
         confidence: float,
         answer_candidate: dict[str, Any] | None,
+        passes_quality_gate: bool = False,
     ) -> ReviewerResult | None:
         expected = _normalize_answer_type(expected_answer_type)
         if expected not in _configured_exact_answer_types():
@@ -304,6 +305,42 @@ class AnswerCalibrator:
             return ReviewerResult(
                 status=ReviewerStatus.DOWNGRADE_LANE,
                 reasons=["Best-effort related answer accepted with explicit disclaimer."],
+                suggested_queries=[],
+                missing_fields=[],
+                final_lane="PASS_PARTIAL",
+                calibrated_confidence=_calibrate_confidence(
+                    mode="PASS_PARTIAL",
+                    support_level="partial",
+                    confidence=confidence,
+                ),
+            )
+
+        if passes_quality_gate and not overclaim:
+            # Quality gate proves evidence is trustworthy, but type mismatch
+            # still means the answer may be expressing the wrong thing.
+            # Only downgrade to PASS_PARTIAL directly when the answer already
+            # contains bounded wording or partial disclaimers. Otherwise,
+            # downgrade with a warning reason so downstream can log the risk.
+            lower_answer = answer.lower()
+            _answer_has_bounded = any(m in lower_answer for m in _PARTIAL_DISCLAIMER_MARKERS)
+            if has_partial or _answer_has_bounded:
+                return ReviewerResult(
+                    status=ReviewerStatus.DOWNGRADE_LANE,
+                    reasons=[f"Quality gate passed; {mismatch_reason} treated as partial with bounded wording."],
+                    suggested_queries=[],
+                    missing_fields=[],
+                    final_lane="PASS_PARTIAL",
+                    calibrated_confidence=_calibrate_confidence(
+                        mode="PASS_PARTIAL",
+                        support_level="partial",
+                        confidence=confidence,
+                    ),
+                )
+            # No bounded wording but quality gate passed — downgrade
+            # with a warning so downstream can log the risk.
+            return ReviewerResult(
+                status=ReviewerStatus.DOWNGRADE_LANE,
+                reasons=[f"Quality gate passed; {mismatch_reason} treated as partial (no bounded wording)."],
                 suggested_queries=[],
                 missing_fields=[],
                 final_lane="PASS_PARTIAL",
@@ -553,6 +590,7 @@ class ReviewerGate:
         answer_expectation: str = "best_effort",
         target_entity: str | None = None,
         answer_candidate: dict[str, Any] | None = None,
+        passes_quality_gate: bool = False,
     ) -> ReviewerResult:
         """Run reviewer checks. Returns status and reasons."""
         _ = (retrieval_attempt, max_attempts)
@@ -614,6 +652,7 @@ class ReviewerGate:
                         evidence=evidence,
                         confidence=confidence,
                         answer_candidate=answer_candidate,
+                        passes_quality_gate=passes_quality_gate,
                     )
                     if calibrated_exact is not None:
                         return calibrated_exact
