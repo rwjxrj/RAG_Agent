@@ -510,131 +510,134 @@ async def _run_pipeline_cases(
 
     service = AnswerService()
     results: list[dict[str, Any]] = []
-    for index, case in enumerate(cases, start=1):
-        started = time.perf_counter()
-        try:
-            output = await asyncio.wait_for(
-                service.generate(
-                    query=case["question"],
-                    trace_id=f"resume-eval-{index:03d}",
-                ),
-                timeout=case_timeout,
-            )
-            elapsed = time.perf_counter() - started
-            debug = output.debug if isinstance(output.debug, dict) else {}
-            evidence = debug.get("evidence_summary") or []
-            # Keep both legacy chunk IDs and stable source URLs for leak-free datasets.
-            ranked_chunk_ids = [
-                str(row.get("chunk_id"))
-                for row in evidence
-                if isinstance(row, dict) and row.get("chunk_id")
-            ]
-            ranked_source_urls = [
-                str(row.get("source_url"))
-                for row in evidence
-                if isinstance(row, dict) and row.get("source_url")
-            ]
-            top5_ids = ranked_chunk_ids[:5]
-            top5_source_urls = ranked_source_urls[:5]
-            expected_source_urls = list(case.get("expected_source_urls") or [])
-            expected_chunk_ids = [str(case["chunk_id"])] if case.get("chunk_id") else []
-            expected_items = expected_source_urls or expected_chunk_ids
-            ranked_items = ranked_source_urls if expected_source_urls else ranked_chunk_ids
-            first_reciprocal_rank = reciprocal_rank(expected_items, ranked_items)
-            timings = debug.get("timings") if isinstance(debug.get("timings"), dict) else {}
-            raw_llm_calls = debug.get("llm_call_log")
-            llm_calls = raw_llm_calls if isinstance(raw_llm_calls, list) else []
-            total_latency = float(timings.get("total") or elapsed)
-            results.append(
-                {
-                    "name": case.get("name") or case.get("title") or f"case-{index:03d}",
-                    "question": case["question"],
-                    "expected_chunk_id": case.get("chunk_id"),
-                    "expected_source_urls": expected_source_urls,
-                    "top5_chunk_ids": top5_ids,
-                    "top5_source_urls": top5_source_urls,
-                    "recall_at_1": recall_at_k(expected_items, ranked_items, 1),
-                    "recall_at_3": recall_at_k(expected_items, ranked_items, 3),
-                    "recall_at_5": recall_at_k(expected_items, ranked_items, 5),
-                    "hit_at_1": hit_at_k(expected_items, ranked_items, 1),
-                    "hit_at_3": hit_at_k(expected_items, ranked_items, 3),
-                    "hit_at_5": hit_at_k(expected_items, ranked_items, 5),
-                    "reciprocal_rank": first_reciprocal_rank,
-                    "first_relevant_rank": (
-                        round(1.0 / first_reciprocal_rank)
-                        if isinstance(first_reciprocal_rank, (int, float)) and first_reciprocal_rank > 0
-                        else None
+    try:
+        for index, case in enumerate(cases, start=1):
+            started = time.perf_counter()
+            try:
+                output = await asyncio.wait_for(
+                    service.generate(
+                        query=case["question"],
+                        trace_id=f"resume-eval-{index:03d}",
                     ),
-                    "latency_seconds": total_latency,
-                    "timings": timings,
-                    "llm_calls": llm_calls,
-                    "tags": list(case.get("tags") or []),
-                    "difficulty": case.get("difficulty"),
-                    "decision": _enum_value(output.decision),
-                    "review_action": debug.get("review_action"),
-                    "reviewer_reasons": debug.get("reviewer_reasons") or [],
-                    "reasoning_prepass": debug.get("reasoning_prepass"),
-                    "retry_count": debug.get("retry_count"),
-                    "retry_diagnostics": debug.get("retry_diagnostics"),
-                    "convergence_reason": debug.get("convergence_reason"),
-                    # Answer and quality — needed for ESCALATE/ASK_USER diagnosis
-                    "answer": getattr(output, "answer", None),
-                    "confidence": getattr(output, "confidence", None),
-                    "citations_count": len(getattr(output, "citations", None) or []),
-                    # Decision routing — which path led to the final decision?
-                    "decision_router": debug.get("decision_router"),
-                    "stage_reasons": debug.get("stage_reasons"),
-                    "termination_reason": debug.get("termination_reason"),
-                    # Quality and review detail
-                    "quality_report": debug.get("quality_report"),
-                    "review_unsupported_claims": debug.get("review_unsupported_claims"),
-                    "error": None,
-                }
-            )
-        except Exception as exc:
-            # 超时或其他异常情况，记录失败结果
-            results.append(
-                {
-                    "name": case.get("name") or case.get("title") or f"case-{index:03d}",
-                    "question": case["question"],
-                    "expected_chunk_id": case.get("chunk_id"),
-                    "expected_source_urls": list(case.get("expected_source_urls") or []),
-                    "top5_chunk_ids": [],
-                    "top5_source_urls": [],
-                    "recall_at_1": None,
-                    "recall_at_3": None,
-                    "recall_at_5": None,
-                    "hit_at_1": None,
-                    "hit_at_3": None,
-                    "hit_at_5": None,
-                    "reciprocal_rank": None,
-                    "first_relevant_rank": None,
-                    "latency_seconds": time.perf_counter() - started,
-                    "timings": {},
-                    "llm_calls": [],
-                    "tags": list(case.get("tags") or []),
-                    "difficulty": case.get("difficulty"),
-                    "decision": "ERROR",
-                    "review_action": None,
-                    "reviewer_reasons": [],
-                    "reasoning_prepass": None,
-                    "retry_count": None,
-                    "retry_diagnostics": None,
-                    "convergence_reason": None,
-                    "answer": None,
-                    "confidence": None,
-                    "citations_count": 0,
-                    "decision_router": None,
-                    "stage_reasons": None,
-                    "termination_reason": None,
-                    "quality_report": None,
-                    "review_unsupported_claims": None,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            )
-        print(f"pipeline {index}/{len(cases)}", flush=True)
-        if case_delay > 0 and index < len(cases):
-            await asyncio.sleep(case_delay)
+                    timeout=case_timeout,
+                )
+                elapsed = time.perf_counter() - started
+                debug = output.debug if isinstance(output.debug, dict) else {}
+                evidence = debug.get("evidence_summary") or []
+                # Keep both legacy chunk IDs and stable source URLs for leak-free datasets.
+                ranked_chunk_ids = [
+                    str(row.get("chunk_id"))
+                    for row in evidence
+                    if isinstance(row, dict) and row.get("chunk_id")
+                ]
+                ranked_source_urls = [
+                    str(row.get("source_url"))
+                    for row in evidence
+                    if isinstance(row, dict) and row.get("source_url")
+                ]
+                top5_ids = ranked_chunk_ids[:5]
+                top5_source_urls = ranked_source_urls[:5]
+                expected_source_urls = list(case.get("expected_source_urls") or [])
+                expected_chunk_ids = [str(case["chunk_id"])] if case.get("chunk_id") else []
+                expected_items = expected_source_urls or expected_chunk_ids
+                ranked_items = ranked_source_urls if expected_source_urls else ranked_chunk_ids
+                first_reciprocal_rank = reciprocal_rank(expected_items, ranked_items)
+                timings = debug.get("timings") if isinstance(debug.get("timings"), dict) else {}
+                raw_llm_calls = debug.get("llm_call_log")
+                llm_calls = raw_llm_calls if isinstance(raw_llm_calls, list) else []
+                total_latency = float(timings.get("total") or elapsed)
+                results.append(
+                    {
+                        "name": case.get("name") or case.get("title") or f"case-{index:03d}",
+                        "question": case["question"],
+                        "expected_chunk_id": case.get("chunk_id"),
+                        "expected_source_urls": expected_source_urls,
+                        "top5_chunk_ids": top5_ids,
+                        "top5_source_urls": top5_source_urls,
+                        "recall_at_1": recall_at_k(expected_items, ranked_items, 1),
+                        "recall_at_3": recall_at_k(expected_items, ranked_items, 3),
+                        "recall_at_5": recall_at_k(expected_items, ranked_items, 5),
+                        "hit_at_1": hit_at_k(expected_items, ranked_items, 1),
+                        "hit_at_3": hit_at_k(expected_items, ranked_items, 3),
+                        "hit_at_5": hit_at_k(expected_items, ranked_items, 5),
+                        "reciprocal_rank": first_reciprocal_rank,
+                        "first_relevant_rank": (
+                            round(1.0 / first_reciprocal_rank)
+                            if isinstance(first_reciprocal_rank, (int, float)) and first_reciprocal_rank > 0
+                            else None
+                        ),
+                        "latency_seconds": total_latency,
+                        "timings": timings,
+                        "llm_calls": llm_calls,
+                        "tags": list(case.get("tags") or []),
+                        "difficulty": case.get("difficulty"),
+                        "decision": _enum_value(output.decision),
+                        "review_action": debug.get("review_action"),
+                        "reviewer_reasons": debug.get("reviewer_reasons") or [],
+                        "reasoning_prepass": debug.get("reasoning_prepass"),
+                        "retry_count": debug.get("retry_count"),
+                        "retry_diagnostics": debug.get("retry_diagnostics"),
+                        "convergence_reason": debug.get("convergence_reason"),
+                        # Answer and quality — needed for ESCALATE/ASK_USER diagnosis
+                        "answer": getattr(output, "answer", None),
+                        "confidence": getattr(output, "confidence", None),
+                        "citations_count": len(getattr(output, "citations", None) or []),
+                        # Decision routing — which path led to the final decision?
+                        "decision_router": debug.get("decision_router"),
+                        "stage_reasons": debug.get("stage_reasons"),
+                        "termination_reason": debug.get("termination_reason"),
+                        # Quality and review detail
+                        "quality_report": debug.get("quality_report"),
+                        "review_unsupported_claims": debug.get("review_unsupported_claims"),
+                        "error": None,
+                    }
+                )
+            except Exception as exc:
+                # 超时或其他异常情况，记录失败结果
+                results.append(
+                    {
+                        "name": case.get("name") or case.get("title") or f"case-{index:03d}",
+                        "question": case["question"],
+                        "expected_chunk_id": case.get("chunk_id"),
+                        "expected_source_urls": list(case.get("expected_source_urls") or []),
+                        "top5_chunk_ids": [],
+                        "top5_source_urls": [],
+                        "recall_at_1": None,
+                        "recall_at_3": None,
+                        "recall_at_5": None,
+                        "hit_at_1": None,
+                        "hit_at_3": None,
+                        "hit_at_5": None,
+                        "reciprocal_rank": None,
+                        "first_relevant_rank": None,
+                        "latency_seconds": time.perf_counter() - started,
+                        "timings": {},
+                        "llm_calls": [],
+                        "tags": list(case.get("tags") or []),
+                        "difficulty": case.get("difficulty"),
+                        "decision": "ERROR",
+                        "review_action": None,
+                        "reviewer_reasons": [],
+                        "reasoning_prepass": None,
+                        "retry_count": None,
+                        "retry_diagnostics": None,
+                        "convergence_reason": None,
+                        "answer": None,
+                        "confidence": None,
+                        "citations_count": 0,
+                        "decision_router": None,
+                        "stage_reasons": None,
+                        "termination_reason": None,
+                        "quality_report": None,
+                        "review_unsupported_claims": None,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+            print(f"pipeline {index}/{len(cases)}", flush=True)
+            if case_delay > 0 and index < len(cases):
+                await asyncio.sleep(case_delay)
+    finally:
+        await service.aclose()
     return results
 
 
