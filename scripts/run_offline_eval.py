@@ -74,6 +74,8 @@ async def _run(args: argparse.Namespace) -> int:
         if filter_token is not None:
             from app.services.retrieval import reset_source_url_filter
             reset_source_url_filter(filter_token)
+        if service is not None:
+            await service.aclose()
 
     dump_eval_run_json(output_json, summary, results)
     dump_eval_run_markdown(output_md, summary, results)

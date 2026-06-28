@@ -683,6 +683,8 @@ class PipelineRunner:
 
         elif action == OrchestratorAction.RETRY_RETRIEVE:
             ctx.verify_output.targeted_retry_pending = False
+            ctx.review_result = None
+            ctx.decision_result = None
             ctx.retrieval_attempt += 1
             ctx.state = OrchestratorState.RETRYING
             ctx.add_stage_reason("retry_retrieve", f"attempt={ctx.retrieval_attempt}")

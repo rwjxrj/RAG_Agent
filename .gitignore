@@ -33,3 +33,13 @@ scripts/e.html
 
 # Local offline evaluation exports may contain customer or ticket data
 tests/fixtures/offline_eval_replay_cases_golden.jsonl
+
+# Database backups - may contain sensitive data
+backups/
+*.sql
+
+# Archive docs - local only
+doc/archive*.md
+
+# Windows null device artifact
+nul

@@ -27,7 +27,7 @@ async def health():
         from app.core.config import get_settings
         r = redis.from_url(get_settings().redis_url)
         await r.ping()
-        await r.close()
+        await r.aclose()
         checks["redis"] = "ok"
     except Exception as e:
         checks["redis"] = f"error: {str(e)[:50]}"

@@ -252,7 +252,7 @@ async def _check_redis() -> str:
         await r.ping()
         return "connected"
     finally:
-        await r.close()
+        await r.aclose()
 
 
 async def _check_qdrant() -> str:

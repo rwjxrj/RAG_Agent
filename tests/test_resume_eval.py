@@ -85,6 +85,7 @@ def test_source_url_metrics_compute_recall_hit_and_reciprocal_rank():
 
 @pytest.mark.asyncio
 async def test_run_pipeline_cases_records_external_retrieval_and_llm_data(monkeypatch):
+    close_count = 0
     output = SimpleNamespace(
         decision="PASS",
         debug={
@@ -112,6 +113,10 @@ async def test_run_pipeline_cases_records_external_retrieval_and_llm_data(monkey
             assert query == "Where is document two?"
             return output
 
+        async def aclose(self):
+            nonlocal close_count
+            close_count += 1
+
     monkeypatch.setattr("app.services.answer_service.AnswerService", FakeAnswerService)
     cases = [
         {
@@ -136,6 +141,7 @@ async def test_run_pipeline_cases_records_external_retrieval_and_llm_data(monkey
     assert rows[0]["reciprocal_rank"] == 0.5
     assert rows[0]["first_relevant_rank"] == 2
     assert rows[0]["llm_calls"][0]["task"] == "normalizer"
+    assert close_count == 1
 
 
 def test_summarize_reports_retrieval_latency_and_llm_tasks():
