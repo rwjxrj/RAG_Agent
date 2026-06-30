@@ -43,3 +43,6 @@ doc/archive*.md
 
 # Windows null device artifact
 nul
+
+# Local test artifacts
+test_list.txt
