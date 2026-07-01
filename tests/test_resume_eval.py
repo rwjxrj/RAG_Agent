@@ -362,6 +362,20 @@ class TestClassifyCaseValidity:
         assert result["business_valid"] is False
         assert result["failure_category"] == "generic_error_answer"
 
+    def test_valid_policy_answer_may_direct_user_to_contact_support(self):
+        """正常业务指引包含“请联系客服”时不应被误判为系统错误。"""
+        case = _valid_case(
+            decision="PASS",
+            answer=(
+                "普通地区包裹超过72小时无新扫描时可发起催查。"
+                "若超过72小时仍无更新，请联系客服，我们将协助跟进承运商反馈。"
+            ),
+            termination_reason="done",
+        )
+        result = run_resume_eval._classify_case_validity(case)
+        assert result["business_valid"] is True
+        assert result["failure_category"] is None
+
     def test_invalid_missing_termination_reason(self):
         """Missing termination reason marks case as invalid."""
         case = _valid_case(termination_reason=None)

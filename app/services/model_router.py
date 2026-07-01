@@ -9,7 +9,7 @@ from app.services.llm_config import get_llm_fallback_model, get_llm_model
 # Task importance: high = primary, medium/low = economy
 TASK_PRIMARY = frozenset({"generate", "self_critic"})
 TASK_ECONOMY = frozenset({
-    "normalizer", "decision_router", "evidence_evaluator", "evidence_quality",
+    "normalizer", "decision_router", "evidence_evaluator", "evidence_quality", "evidence_quality_verify",
     "final_polish", "doc_type_classifier", "query_rewriter", "evidence_selector",
     "branding_auto_generator", "conversation_relevance_check",
 })

@@ -54,14 +54,17 @@
 - 新增测试优先覆盖 loader。
 - 不直接清理旧索引。
 
-## 调整 WHMCS 工单学习流程
+## [已归档] 调整工单学习流程（原 WHMCS）
+
+以下是原 WHMCS 集成流程，仍可用但不再主动维护。新用户请优先使用文档入库。
+
 先读：
 - `app/api/routes/admin.py`
 - `app/api/routes/tickets.py`
-- `app/crawlers/whmcs.py`
+- `app/crawlers/whmcs.py`（遗留归档）
 - `app/services/ticket_db.py`
 - `app/services/ticket_sync.py`
-- `scripts/import_whmcs_sql_dump_to_tickets.py`
+- `scripts/import_whmcs_sql_dump_to_tickets.py`（遗留归档）
 - `scripts/ingest_tickets_from_source.py`
 
 流程：
@@ -72,7 +75,7 @@
 5. 重新入库到 RAG 索引。
 
 注意：
-- 抓取外部 WHMCS 前必须确认 base URL、cookie 或账号。
+- 抓取外部系统前必须确认 base URL、cookie 或账号。
 - SQL 导入先 dry run。
 - 不绕过人工审批。
 

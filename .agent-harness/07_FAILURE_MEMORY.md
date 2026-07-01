@@ -61,6 +61,29 @@
 - 相关文件：`app/services/answer_utils.py`, `tests/test_answer_service.py`
 - 后续注意：解析失败 fallback 不应填入会被答案校准逻辑当作已生成业务答案的内部错误文案。
 
+## 2026-06-29 - SDK 内部重试耗尽管道 fallback 时间
+- 现象：10 条冷启动评测中 `EVAL-010` 在生成阶段停留约 94 秒，未记录主模型失败或备用模型调用，最终触发 120 秒管道总超时。
+- 影响：主模型请求异常缓慢时，已配置的独立 DeepSeek 备用供应商没有机会接管，请求以 `ESCALATE` 结束并使 benchmark 无效。
+- 根因：主、备用 `AsyncOpenAI` 客户端沿用 SDK 默认 `max_retries=2`；一次 `chat.completions.create()` 会在 gateway 不可见的内部重试，外层显式 fallback 要等调用返回后才能执行。
+- 修复：客户端统一设置 `max_retries=0`，由 `LLMGateway` 现有模型 fallback 和 429 有界退避逻辑控制重试。
+- 验证：`tests/test_llm_gateway.py::test_primary_and_fallback_clients_disable_sdk_internal_retries` 在修复前因缺少 `max_retries` 失败，修复后通过；完整冷启动结果见对应评测产物。
+- 相关文件：`app/services/llm_gateway.py`, `tests/test_llm_gateway.py`, `artifacts/offline_eval/`
+- 后续注意：provider SDK 的隐式重试必须纳入端到端超时预算；新增客户端时应显式声明 retry 策略。
+
+## 2026-06-29 - EVAL-004 Evidence Quality 假阴性导致无效检索重试
+- 现象：问题“放购物车里的衣服会不会被别人买走？”首轮已将 `eval://retrieval/doc-004` 排在第 1，但质量评估错误判定缺少直接政策说明，连续触发检索重试；其中一次 Evidence Selector 还返回了不完整 JSON。
+- 影响：Recall@1 已命中却产生 3 次无效重试，EVAL-004 总耗时升至约 44 秒；最终答案正确，但暴露质量门纠错能力不足。
+- 根因：Evidence Quality 对“购物车不锁库存，其他顾客仍可购买”的直接语义覆盖发生假阴性，不是检索失败或知识库政策缺口。
+- 修复：仅在首轮、政策短答、非基础设施失败场景执行一次聚焦复核；模型必须给出可在权威 chunk 中逐字校验的引用，才允许修正质量门。调用使用独立任务标签 `evidence_quality_verify`。
+- 安全边界：错误 chunk、过短引用、引用不存在、超时或 JSON 解析失败均不得放行；不硬编码购物车关键词，不修改排序、知识库或重试上限。
+- 相关文件：`app/services/evidence_quality.py`、`app/services/phases/assess.py`、`tests/test_evidence_quality.py`、`tests/test_quality_gate_retry_convergence.py`
+
+## 2026-06-30 - 100 条评测被正常“请联系客服”业务指引误判为通用错误
+- 现象：EVAL-073 正确回答物流超过 72 小时可联系客服催查，100 条脚本却返回 `generic_error_answer`，导致 99/100、Benchmark invalid。
+- 根因：评测器将单独短语“请联系客服”列为通用系统错误特征，无法区分正常售后操作指引和真正的异常兜底回答。
+- 修复：移除该单独短语；仍保留“系统错误”“暂时无法”“遇到问题”以及英文完整错误句式。新增回归测试保证正常客服指引有效。
+- 影响边界：只修正离线评测分类，不修改任何 RAG 业务输出、检索排序或原始 100 条 case 结果。
+
 ## 待补充记忆
 - RAG 检索无结果的真实案例。
 - embedding 维度不匹配的处理记录。

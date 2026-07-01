@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,122 @@ class QualityReport:
     actionability_score: float | None = None
     gate_pass: bool | None = None
     reason: str | None = None
+    verification_applied: bool = False
+    verification_chunk_id: str | None = None
+    verification_quote: str | None = None
+    verification_reason: str | None = None
+
+
+@dataclass
+class FocusedVerificationResult:
+    """Result of a narrowly scoped policy-evidence verification."""
+
+    supported: bool
+    chunk_id: str | None = None
+    quote: str | None = None
+    reason: str | None = None
+
+
+EVIDENCE_QUALITY_VERIFY_PROMPT = """Verify whether one provided policy excerpt directly answers the query.
+
+Output MUST be exactly this JSON object. No markdown or extra text.
+{
+  "supported": true,
+  "chunk_id": "the exact supplied chunk id",
+  "quote": "an exact verbatim quote from that chunk",
+  "reason": "brief reason"
+}
+
+Set supported=false unless the evidence directly supports a short, decisive answer.
+When supported=true, quote must be copied verbatim from one supplied chunk. Never paraphrase the quote.
+"""
+
+
+def _normalize_quote_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+async def verify_policy_quality_false_negative(
+    query: str,
+    chunks: list[EvidenceChunk],
+) -> FocusedVerificationResult:
+    """Safely verify a suspected policy-quality false negative using top evidence."""
+    settings = get_settings()
+    policy_doc_types = {
+        str(value).strip().lower()
+        for value in (getattr(settings, "reviewer_policy_doc_types", None) or [])
+        if str(value).strip()
+    } or {"policy", "tos"}
+    authoritative = [
+        chunk for chunk in chunks
+        if (chunk.doc_type or "").strip().lower() in policy_doc_types
+    ][:3]
+    if not authoritative:
+        return FocusedVerificationResult(False, reason="no_authoritative_evidence")
+
+    evidence_rows = []
+    chunk_by_id: dict[str, EvidenceChunk] = {}
+    for chunk in authoritative:
+        chunk_id = str(chunk.chunk_id or "").strip()
+        if not chunk_id:
+            continue
+        chunk_by_id[chunk_id] = chunk
+        content = (chunk.full_text or chunk.snippet or "").strip()[:2000]
+        evidence_rows.append(
+            {"chunk_id": chunk_id, "source_url": chunk.source_url, "doc_type": chunk.doc_type, "content": content}
+        )
+    if not evidence_rows:
+        return FocusedVerificationResult(False, reason="no_authoritative_evidence")
+
+    try:
+        from app.core.tracing import llm_task_context
+        from app.services.llm_gateway import get_llm_gateway
+        from app.services.model_router import get_model_for_task
+
+        with llm_task_context("evidence_quality_verify"):
+            response = await get_llm_gateway().chat(
+                messages=[
+                    {"role": "system", "content": EVIDENCE_QUALITY_VERIFY_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {"query": (query or "")[:600], "evidence": evidence_rows},
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                temperature=0.0,
+                model=get_model_for_task("evidence_quality_verify"),
+                max_tokens=240,
+            )
+        data = json.loads(_extract_probable_json((response.content or "").strip()))
+        if _coerce_bool(data.get("supported")) is not True:
+            return FocusedVerificationResult(False, reason=str(data.get("reason") or "not_supported"))
+
+        chunk_id = str(data.get("chunk_id") or "").strip()
+        chunk = chunk_by_id.get(chunk_id)
+        if chunk is None:
+            return FocusedVerificationResult(False, reason="chunk_not_found")
+        quote = str(data.get("quote") or "").strip()
+        normalized_quote = _normalize_quote_text(quote)
+        if len(normalized_quote) < 8:
+            return FocusedVerificationResult(False, reason="quote_too_short")
+        normalized_content = _normalize_quote_text(chunk.full_text or chunk.snippet or "")
+        if normalized_quote not in normalized_content:
+            return FocusedVerificationResult(False, reason="quote_not_found")
+        return FocusedVerificationResult(
+            True,
+            chunk_id=chunk_id,
+            quote=quote,
+            reason=str(data.get("reason") or "verified_exact_quote"),
+        )
+    except Exception as error:
+        logger.warning(
+            "evidence_quality_verification_failed",
+            error=str(error),
+            query=(query or "")[:80],
+        )
+        return FocusedVerificationResult(False, reason="verification_failed")
 
 
 EVIDENCE_QUALITY_PROMPT = """You judge whether provided evidence is sufficient for a support answer.

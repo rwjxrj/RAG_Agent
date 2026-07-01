@@ -48,7 +48,9 @@ python scripts/ingest_tickets_from_source.py
 - 对已入库但需要刷新 chunk 索引元数据的单文件基准集，可使用 `--force-reindex` 重建该文件对应文档的 OpenSearch/Qdrant 索引。
 - `ingest_tickets_from_source.py` 读取 sample conversations，具体写入路径待代码确认。
 
-## WHMCS 工单导入和抓取
+## [已归档] WHMCS 工单导入和抓取
+
+以下命令对应旧 WHMCS 集成流程，代码仍存在于仓库中但不再主动维护。新用户请优先使用文档入库流程。
 
 ```powershell
 make import-whmcs-dry

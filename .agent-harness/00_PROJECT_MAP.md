@@ -35,10 +35,10 @@ app/
   services/phases/        RAG 阶段：retrieve、assess、decide、generate、verify
   search/                 OpenSearch、Qdrant、embedding、reranker
   db/                     SQLAlchemy models 和 session
-  crawlers/               WHMCS Playwright 爬虫
+  crawlers/               工单样本爬虫（原 WHMCS，已归档）
 worker/                   Celery 应用和入库任务
 frontend/                 React + Vite 前端
-scripts/                  初始化、入库、WHMCS 导入、调试脚本
+scripts/                  初始化、入库、工单导入（含 WHMCS 遗留脚本）、调试脚本
 alembic/                  数据库迁移
 nginx/                    full profile 下的 nginx 配置
 source/                   运行时知识库源文件目录，可能未纳入 git
@@ -61,7 +61,7 @@ flowchart TD
   J --> K["Reviewer / Verify"]
   K --> L["答案、引用、debug_metadata"]
 
-  M["source、URL、上传、WHMCS"] --> N["Documents/Admin/Scripts"]
+  M["source、URL、上传、工单样本"] --> N["Documents/Admin/Scripts"]
   N --> O["IngestionService"]
   O --> P["PostgreSQL Document/Chunk"]
   O --> G
@@ -78,11 +78,11 @@ flowchart TD
 - Docker、Compose、Nginx、数据卷和服务端口：影响部署和本地环境。
 - Alembic 迁移、认证、JWT、API token：影响数据和安全。
 - RAG 编排、检索排序、EvidenceSet、Reviewer：影响回答质量，需要先画流程和跑窄测试。
-- WHMCS 爬虫和工单导入：可能触发外部系统访问或数据写入。
+- 工单样本导入（含 WHMCS 遗留脚本）：可能触发外部系统访问或数据写入。
 - 删除类接口：`documents` 删除会尝试删除 OpenSearch/Qdrant chunk，并同步 source JSON。
 
 ## 待确认事项
-- `README.md` 是否应新增或改名为 `README_zh.md` 的入口。
+- `README.md` 已作为主文档存在，`README_zh.md` 未纳入 git 跟踪，已确认。
 - `source/` 是否为运行时目录，当前 `git ls-files` 未列出具体源文件。
 - `IngestionService.ingest_document` 内部写入 OpenSearch/Qdrant 的精确调用顺序待代码确认。
 - 生产环境是否固定使用 Docker Compose，还是还有其他部署方式，待确认。

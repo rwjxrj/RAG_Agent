@@ -1,8 +1,10 @@
 """Tests for quality gate retry diagnostics and convergence (Issue 4)."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.search.base import EvidenceChunk
+from app.services.evidence_quality import FocusedVerificationResult, QualityReport
 from app.services.orchestrator import (
     OrchestratorAction,
     OrchestratorContext,
@@ -10,6 +12,7 @@ from app.services.orchestrator import (
     PipelineRunner,
 )
 from app.services.schemas import OrchestratorDebug
+from app.services.phases.assess import execute_assess_evidence
 
 
 def _make_ctx(**overrides) -> OrchestratorContext:
@@ -46,6 +49,118 @@ def _make_runner(**settings_overrides) -> PipelineRunner:
     runner = PipelineRunner.__new__(PipelineRunner)
     runner._settings = _make_settings(**settings_overrides)
     return runner
+
+
+def _policy_false_negative_report(*, infrastructure_failure: bool = False) -> QualityReport:
+    return QualityReport(
+        quality_score=0.7,
+        feature_scores={},
+        missing_signals=[
+            "quality_llm_failed"
+            if infrastructure_failure
+            else "缺少能直接确认购物车商品是否会被其他顾客购买的政策说明"
+        ],
+        staleness_risk=None,
+        boilerplate_risk=0.0,
+        hard_requirement_coverage={"policy_language": False},
+        completeness_score=0.7,
+        actionability_score=0.7,
+        gate_pass=False,
+        reason="误判为缺少直接政策说明",
+    )
+
+
+@pytest.mark.asyncio
+async def test_assess_first_attempt_applies_verified_policy_quote_and_records_diagnostics():
+    text = "加入购物车并不会锁定库存，其他顾客仍然可以购买。"
+    ctx = _make_ctx(
+        query="放购物车里的衣服会不会被别人买走？",
+        retrieval_attempt=0,
+        evidence=[EvidenceChunk("doc-004-chunk", text, "eval://retrieval/doc-004", "faq", 1.0, text)],
+    )
+    ctx.retrieve_output.active_required_evidence = ["policy_language"]
+    ctx.retrieve_output.active_hard_requirements = ["policy_language"]
+    ctx.retrieve_output.active_answer_shape = "yes_no"
+
+    with (
+        patch("app.services.phases.assess.evaluate_quality", AsyncMock(return_value=_policy_false_negative_report())),
+        patch(
+            "app.services.phases.assess.verify_policy_quality_false_negative",
+            AsyncMock(return_value=FocusedVerificationResult(True, "doc-004-chunk", text, "原文直接回答")),
+        ) as verify,
+    ):
+        result = await execute_assess_evidence(ctx)
+
+    assert result.passes_quality_gate is True
+    assert result.quality_report.gate_pass is True
+    assert result.quality_report.missing_signals == []
+    assert result.quality_report.hard_requirement_coverage == {"policy_language": True}
+    assert verify.await_count == 1
+    assert ctx.retry_diagnostics[-1]["verification_applied"] is True
+    assert ctx.retry_diagnostics[-1]["verification_chunk_id"] == "doc-004-chunk"
+    assert ctx.retry_diagnostics[-1]["verification_quote"] == text
+
+
+@pytest.mark.asyncio
+async def test_assess_verified_policy_quote_does_not_override_other_uncovered_hard_requirement():
+    report = _policy_false_negative_report()
+    report.hard_requirement_coverage["numbers_units"] = False
+    ctx = _make_ctx(retrieval_attempt=0, evidence=[])
+    ctx.retrieve_output.active_required_evidence = ["policy_language", "numbers_units"]
+    ctx.retrieve_output.active_hard_requirements = ["policy_language", "numbers_units"]
+    ctx.retrieve_output.active_answer_shape = "short_answer"
+    with (
+        patch("app.services.phases.assess.evaluate_quality", AsyncMock(return_value=report)),
+        patch(
+            "app.services.phases.assess.verify_policy_quality_false_negative",
+            AsyncMock(return_value=FocusedVerificationResult(True, "c1", "这是足够长的政策原文。", "政策已覆盖")),
+        ),
+    ):
+        result = await execute_assess_evidence(ctx)
+
+    assert result.passes_quality_gate is False
+    assert result.quality_report.hard_requirement_coverage["policy_language"] is True
+    assert result.quality_report.hard_requirement_coverage["numbers_units"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attempt", "answer_shape", "required"),
+    [
+        (1, "yes_no", ["policy_language"]),
+        (0, "comparison", ["policy_language"]),
+        (0, "yes_no", ["numbers_units"]),
+    ],
+)
+async def test_assess_does_not_verify_outside_first_policy_short_answer(attempt, answer_shape, required):
+    ctx = _make_ctx(retrieval_attempt=attempt, evidence=[])
+    ctx.retrieve_output.active_required_evidence = required
+    ctx.retrieve_output.active_hard_requirements = required
+    ctx.retrieve_output.active_answer_shape = answer_shape
+    with (
+        patch("app.services.phases.assess.evaluate_quality", AsyncMock(return_value=_policy_false_negative_report())),
+        patch("app.services.phases.assess.verify_policy_quality_false_negative", AsyncMock()) as verify,
+    ):
+        result = await execute_assess_evidence(ctx)
+
+    assert result.passes_quality_gate is False
+    verify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_assess_does_not_verify_quality_infrastructure_failure():
+    ctx = _make_ctx(retrieval_attempt=0, evidence=[])
+    ctx.retrieve_output.active_required_evidence = ["policy_language"]
+    ctx.retrieve_output.active_hard_requirements = ["policy_language"]
+    ctx.retrieve_output.active_answer_shape = "direct_lookup"
+    with (
+        patch("app.services.phases.assess.evaluate_quality", AsyncMock(return_value=_policy_false_negative_report(infrastructure_failure=True))),
+        patch("app.services.phases.assess.verify_policy_quality_false_negative", AsyncMock()) as verify,
+    ):
+        result = await execute_assess_evidence(ctx)
+
+    assert result.passes_quality_gate is False
+    verify.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

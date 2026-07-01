@@ -112,7 +112,6 @@ _GENERIC_ERROR_PATTERNS = [
     "系统错误",
     "暂时无法",
     "遇到问题",
-    "请联系客服",
 ]
 
 # Intentional human handoff answer patterns (from Agentic Router)

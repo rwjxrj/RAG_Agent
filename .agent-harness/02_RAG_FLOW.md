@@ -1,16 +1,16 @@
 # 02_RAG_FLOW.md
 
 ## 结论
-RAG 分两条主线：入库线把 source、URL、上传文件、WHMCS 工单转为 Document/Chunk，并写入 PostgreSQL、OpenSearch、Qdrant；查询线从 conversations 或 reply 进入 `AnswerService.generate()` 薄包装，再由 `PipelineRunner.run()` 统一执行 intent cache、Agentic Router、normalizer、检索、生成和校验状态。进入 RAG 时仍经 `RetrievalService.retrieve()`、EvidenceSet、LLM、`ReviewerGate.review()` 输出答案和引用。
+RAG 分两条主线：入库线把 source、URL、上传文件、工单样本转为 Document/Chunk，并写入 PostgreSQL、OpenSearch、Qdrant；查询线从 conversations 或 reply 进入 `AnswerService.generate()` 薄包装，再由 `PipelineRunner.run()` 统一执行 intent cache、Agentic Router、normalizer、检索、生成和校验状态。进入 RAG 时仍经 `RetrievalService.retrieve()`、EvidenceSet、LLM、`ReviewerGate.review()` 输出答案和引用。
 
 ## 入库流程
 
 ```mermaid
 flowchart TD
-  A["source/*.json 或 source/*.sql"] --> B["scripts 或 /admin/ingest-from-source"]
+  A["source/*.json"] --> B["scripts 或 /admin/ingest-from-source"]
   C["单 URL / 整站抓取"] --> D["/documents/fetch-from-url 或 /documents/crawl-website"]
   E["上传文件"] --> F["/documents/upload"]
-  G["WHMCS 工单抓取"] --> H["/admin/crawl-tickets"]
+  G["工单样本抓取（WHMCS 遗留）"] --> H["/admin/crawl-tickets"]
   H --> I["Ticket 表"]
   I --> J["人工审批 approved"]
   J --> K["/admin/ingest-tickets-to-file"]
@@ -147,6 +147,7 @@ flowchart TD
 - `LLMGateway` 会根据 `current_llm_task_var` 为结构化任务自动透传 `response_format={"type":"json_object"}`，覆盖 normalizer、evidence_quality、evidence_selector、generate_reasoning、generate 等需要 JSON 解析的调用；该参数也会进入 LLM 缓存 key，避免 JSON/非 JSON 请求共用缓存。如果 OpenAI-compatible 网关明确拒绝 `response_format` 参数，同一模型会去掉该参数重试一次，作为 prompt-only 兼容降级。
 - `debug_metadata.retry_count` 返回实际发生的检索重试次数，不改变 RAG 分支逻辑。
 - `LLMGateway` 支持为 fallback model 配置独立的 API key 和 Base URL。当 `llm_fallback_api_key` 与 `llm_fallback_base_url` 同时为非空时，fallback attempt 使用独立 `AsyncOpenAI` 客户端；任一字段缺失时，当前实现继续使用主客户端请求 fallback model，不会把主 API key 发送到另一个 Base URL。
+- 主、备用 `AsyncOpenAI` 客户端关闭 SDK 内部自动重试（`max_retries=0`），避免单次 provider 调用在内部重复消耗完整超时预算；模型 fallback 和 429 有界退避统一由 `LLMGateway` 显式控制，确保主模型失败后仍有机会切换备用供应商。
 - 管理后台的 LLM 配置接口与设置页可以读写上述两个 fallback 字段。当前实现尚未在保存阶段强制校验两个字段必须成对提供，因此不完整配置会静默退回主客户端；修复任务记录在 `.scratch/llm-fallback-provider-hardening/issues/`。
 - 当前 LLM 响应缓存 key 仍以主请求模型、消息和生成参数为主，未区分 fallback provider 端点；独立 fallback 客户端的显式关闭和缓存隔离也属于待修复项。
 - `debug_metadata.agentic_router` 是可选字段：intent cache 命中时只标记 `skipped=true` 和 `reason=intent_cache_hit`；Router 执行时记录 `route`、`tool`、`reason`、`confidence`、`skipped` 和 `fallback_to_rag`。顶层 API 字段不因该字段改变。
@@ -289,6 +290,8 @@ flowchart TD
 - `ESCALATE`：进入 `ESCALATE` 输出。
 - `ASK_USER`：如果 `targeted_retry_enabled`、仍可重试、未用过 verify targeted retry、`retry_reason` 属于 `type_mismatch` / `overclaim` / `unsupported_exact` 且有 `suggested_queries`，则设置 `retry_query_override` 并回到 `RETRY_RETRIEVE`；否则进入 `ASK_USER` 输出。
 - `ASSESS_EVIDENCE` 失败但 `missing_signals` 包含 `quality_llm_failed` 时，视为质量评估基础设施不可用，而不是证据缺失；该场景不触发 `RETRY_RETRIEVE`。
+- 首轮 `ASSESS_EVIDENCE` 对 `policy_language` 的 `direct_lookup` / `yes_no` / `short_answer` 出现质量门假阴性时，会以 `evidence_quality_verify` 任务标签对前三条权威政策证据执行一次聚焦复核。只有模型返回的 `chunk_id` 存在、逐字引用不少于 8 个字符且经空白归一化后确实包含在原 chunk 中，才修正 `policy_language` 覆盖并放行；解析异常、伪造引用、基础设施失败及后续检索轮次均保持原重试行为。
+- 聚焦复核结果写入 retry diagnostics 的 `verification_applied`、`verification_chunk_id`、`verification_quote` 和 `verification_reason`；每个请求最多调用一次。`evidence_quality_verify` 与其他结构化轻量任务一样启用 JSON response format 并进入 LLM attempt 遥测。
 - 任一 phase 抛异常时，`PipelineRunner` 捕获后通过 `build_output(ESCALATE)` 结束。
 
 ### Retry 收敛规则

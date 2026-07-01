@@ -1,4 +1,4 @@
-# Support AI Assistant 企业客服 RAG 系统
+# 企业客服知识库 RAG 智能问答系统
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com)
@@ -6,13 +6,13 @@
 
 ## 结论
 
-这是一个面向企业客服、工单和 livechat 场景的 RAG 支持助手。项目由 FastAPI 后端、React 管理台、PostgreSQL、Redis/Celery、OpenSearch、Qdrant 和 MinIO 组成，核心能力是把文档、网页、上传文件和 WHMCS 工单沉淀为知识库，再通过统一的 `PipelineRunner` 状态机执行意图路由、查询标准化、混合检索、证据评估、LLM 生成和审核，输出可引用、可追踪的客服建议回复。
+这是一个面向企业客服、工单和 livechat 场景的 RAG 支持助手。项目由 FastAPI 后端、React 管理台、PostgreSQL、Redis/Celery、OpenSearch、Qdrant 和 MinIO 组成，核心能力是把文档、网页、上传文件和工单样本沉淀为知识库，再通过统一的 `PipelineRunner` 状态机执行意图路由、查询标准化、混合检索、证据评估、LLM 生成和审核，输出可引用、可追踪的客服建议回复。
 
 适合的使用方式：
 
 - 作为内部客服控制台：管理知识库、会话、工单、意图缓存、文档类型、模型配置和 API Token。
-- 作为外部系统的建议回复 API：WHMCS、Zendesk、livechat 或自建 helpdesk 可直接调用 `/v1/reply/generate`。
-- 作为持续学习闭环：抓取或导入工单，人工审批高质量样本，再回写到 `source/sample_conversations.json` 并重新入库。
+- 作为外部系统的建议回复 API：Zendesk、livechat 或自建 helpdesk 可直接调用 `/v1/reply/generate`。
+- 作为持续学习闭环：上传或导入工单样本，经审核后回写到 `source/sample_conversations.json` 并重新入库。
 
 ## 目录
 
@@ -118,10 +118,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  A["source/*.json / source/*.sql"] --> B["scripts 或 /admin/ingest-from-source"]
+  A["source/*.json"] --> B["scripts 或 /admin/ingest-from-source"]
   C["单 URL 抓取"] --> D["/documents/fetch-from-url"]
   E["上传文件"] --> F["/documents/upload"]
-  G["WHMCS 工单抓取"] --> H["Ticket 表 + 人工审批"]
+  G["外部工单样本导入"] --> H["Ticket 表 + 人工审批"]
   H --> I["/admin/ingest-tickets-to-file"]
   I --> A
   B --> J["source_loaders"]
@@ -151,7 +151,7 @@ flowchart TD
 | 会话管理 | 创建会话、同步/流式发送消息、保存引用和 debug metadata，可关联 ticket/livechat。 |
 | 建议回复 | `POST /v1/reply/generate` 提供无状态客服建议回复，适合集成外部系统。 |
 | 文档管理 | 文档 CRUD、单 URL 抓取、单篇/全部 URL 文档重新抓取、上传文件、同步 source JSON。 |
-| 工单学习 | WHMCS cookie/账号登录抓取、SQL 转储导入、审批 pending/approved/rejected、导出已批准样本。 |
+| 工单学习 | 工单样本导入、审批 pending/approved/rejected、导出已批准样本回写至知识库。 |
 | RAG 管线 | PipelineRunner 状态机、Agentic Router、组合式 QuerySpec、混合检索、EvidenceSet、证据质量门控、ReviewerGate、targeted retry。 |
 | 配置中心 | LLM、Embedding、Reranker、架构开关、system prompt、branding、意图缓存、文档类型。 |
 | 健康检查 | 快速检查 PostgreSQL/Redis；综合检查 LLM、Embedding、Reranker、PostgreSQL、Redis、Qdrant 和 OpenSearch。 |
@@ -260,7 +260,6 @@ Vite 本地开发默认访问 `http://localhost:5173`；Docker 前端访问 `htt
 | `sample_docs.json` | 静态文档、网页、政策、FAQ、价格页等。 |
 | `sample_conversations.json` | 高质量工单或客服会话样本。 |
 | `custom_docs.json` | 管理后台创建并同步回文件的文档。 |
-| `*.sql` | WHMCS SQL 转储，可通过导入脚本解析为工单。 |
 
 `app/services/source_loaders.py` 支持 `pages`、`articles`、`plans`、`sales_kb`、`sample_conversations` 等格式。
 
@@ -270,22 +269,11 @@ Vite 本地开发默认访问 `http://localhost:5173`；Docker 前端访问 `htt
 - 上传文件：`POST /v1/documents/upload`
 - 重新抓取：`POST /v1/documents/{id}/re-crawl` 或 `POST /v1/documents/re-crawl-all`
 
-### WHMCS 工单闭环
+### 工单样本闭环
 
-1. 通过 admin API 配置 WHMCS base URL 和 cookie。
-2. 抓取工单写入 Ticket 表。
-3. 人工审批高质量工单为 `approved`。
-4. 调用 `POST /v1/admin/ingest-tickets-to-file` 导出到 `source/sample_conversations.json`。
-5. 运行 `python scripts/ingest_tickets_from_source.py` 重新 embedding 并写入 OpenSearch/Qdrant。
-
-SQL 转储导入：
-
-```powershell
-make import-whmcs-dry
-make import-whmcs
-```
-
-先 dry run，确认解析结果后再写入数据库。
+1. 通过 `POST /v1/admin/ingest-tickets-to-file` 或手动编辑将工单样本放入 `source/sample_conversations.json`。
+2. 人工审批高质量工单为 `approved`（pending 和 rejected 样本不参与知识库检索）。
+3. 运行 `python scripts/ingest_tickets_from_source.py` 将已批准样本 embedding 并写入 OpenSearch/Qdrant。
 
 ## API 与集成
 
@@ -309,7 +297,6 @@ make import-whmcs
 | Tickets | `GET /v1/tickets/{id}` | 工单详情。 |
 | Admin | `POST /v1/admin/ingest` | 异步入库文档。 |
 | Admin | `POST /v1/admin/ingest-from-source` | 从 `source/` 同步入库。 |
-| Admin | `POST /v1/admin/crawl-tickets` | 抓取 WHMCS 工单。 |
 | Admin | `PATCH /v1/admin/tickets/{id}/approval` | 更新工单审批状态。 |
 | Admin | `GET/PUT /v1/admin/config/llm` | LLM 配置。 |
 | Admin | `GET/PUT /v1/admin/config/embedding` | Embedding 配置。 |
@@ -465,15 +452,6 @@ python scripts/ingest_from_source.py --dry-run
 python scripts/ingest_tickets_from_source.py
 ```
 
-### WHMCS
-
-```powershell
-make import-whmcs-dry
-make import-whmcs
-python scripts/crawl_whmcs_tickets.py
-python scripts/whmcs_login_browser.py
-```
-
 ### 后端和前端开发
 
 ```powershell
@@ -500,7 +478,7 @@ app/
   services/               PipelineRunner 编排、入库、检索、LLM、配置、工单同步、URL 抓取
   services/phases/        retrieve、assess、decide、generate、verify 等 RAG 阶段
   search/                 OpenSearch、Qdrant、embedding、reranker
-  crawlers/               WHMCS Playwright 爬虫
+  crawlers/               工单样本爬虫脚本
 worker/
   celery_app.py           Celery app
   tasks.py                异步入库任务
@@ -508,7 +486,7 @@ frontend/
   src/App.tsx             前端路由和主导航
   src/pages/              会话、文档、仪表盘、设置、健康检查、Token、API 参考等页面
 alembic/                  数据库迁移
-scripts/                  初始化、入库、WHMCS 导入和调试脚本
+scripts/                  初始化、入库、工单导入和调试脚本
 source/                   运行时知识源文件目录
 nginx/                    full profile 网关配置
 .agent-harness/           Codex 项目地图、服务地图、RAG 流程和变更约束文档
@@ -634,7 +612,7 @@ $bv = $data.summary.benchmark_validity
 | API 返回 401 | 检查 Bearer JWT、`X-API-Key` 或 `X-Admin-API-Key` 是否正确。 |
 | 入库后检索不到内容 | 先运行 `make ingest-dry` 检查 source 格式，再看 api/worker 日志和 OpenSearch/Qdrant 状态。 |
 | 切换 embedding 模型后检索异常 | 确认 `EMBEDDING_DIMENSIONS` 与 Qdrant collection 维度一致，必要时重新建索引并重新入库。 |
-| WHMCS 工单抓取失败 | cookie 可能过期；重新登录 WHMCS，确认 base URL、list path 和 login path。 |
+
 | 综合健康检查失败 | 在管理台健康检查页或 `POST /v1/health/check` 查看具体服务、延迟和脱敏错误；模型检查会产生少量真实请求。 |
 | LLM 无响应或模型错误 | 检查 Settings 中 LLM 配置、`.env` fallback、`OPENAI_BASE_URL` 和 provider 模型名。 |
 | 答案被追问或转人工 | 查看 `debug_metadata`、pipeline 日志、EvidenceSet 和 reviewer 结果，确认知识库证据是否足够。 |

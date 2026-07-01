@@ -203,7 +203,7 @@ async def test_chat_uses_request_hash_for_redis_cache(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_requests_json_response_for_structured_task(monkeypatch):
+async def test_chat_requests_json_response_for_evidence_quality_verify(monkeypatch):
     calls: dict[str, object] = {}
 
     async def fake_create(**kwargs):
@@ -223,7 +223,7 @@ async def test_chat_requests_json_response_for_structured_task(monkeypatch):
     gateway._set_cached = fake_set_cached
     monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_model", lambda: "gpt-4o-mini")
 
-    token = current_llm_task_var.set("normalizer")
+    token = current_llm_task_var.set("evidence_quality_verify")
     messages = [
         {"role": "system", "content": "只返回 JSON。"},
         {"role": "user", "content": "测试"},
@@ -787,7 +787,7 @@ async def test_lightweight_records_fallback_status(monkeypatch):
     monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_model", lambda: "gpt-4o-mini")
     monkeypatch.setattr("app.services.archi_config.get_debug_llm_calls", lambda: False)
 
-    task_token = current_llm_task_var.set("evidence_quality")
+    task_token = current_llm_task_var.set("evidence_quality_verify")
     log_token = llm_call_log_var.set([])
     try:
         result = await gateway.chat(
@@ -802,8 +802,10 @@ async def test_lightweight_records_fallback_status(monkeypatch):
     assert result.model == "gpt-4o-mini"
     assert len(records) == 2
     assert records[0]["status"] == "error"
+    assert records[0]["task"] == "evidence_quality_verify"
     assert records[0]["is_fallback"] is False
     assert records[1]["status"] == "success"
+    assert records[1]["task"] == "evidence_quality_verify"
     assert records[1]["is_fallback"] is True
 
 
@@ -837,6 +839,34 @@ def test_complete_independent_fallback_creates_separate_client(monkeypatch):
     assert gateway._fallback_client is not gateway._client
     # Confirm the fallback client uses the dedicated key, not the primary key
     assert gateway._fallback_client.api_key == "sk-fallback"
+
+
+def test_primary_and_fallback_clients_disable_sdk_internal_retries(monkeypatch):
+    """SDK 不应在 gateway 显式 fallback 之外重复消耗超时预算。"""
+    client_kwargs = []
+
+    class FakeClient:
+        pass
+
+    def fake_async_openai(**kwargs):
+        client_kwargs.append(kwargs)
+        return FakeClient()
+
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_fallback_api_key", lambda: "sk-fallback")
+    monkeypatch.setattr(
+        "app.services.llm_gateway.get_llm_fallback_base_url",
+        lambda: "https://fallback.example.com/v1",
+    )
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_api_key", lambda: "sk-primary")
+    monkeypatch.setattr("app.services.llm_gateway.get_llm_base_url", lambda: "")
+    monkeypatch.setattr("app.services.llm_gateway.AsyncOpenAI", fake_async_openai)
+    monkeypatch.setattr("app.core.config.get_settings", lambda: _Settings())
+
+    OpenAIGateway()
+
+    assert len(client_kwargs) == 2
+    assert client_kwargs[0]["max_retries"] == 0
+    assert client_kwargs[1]["max_retries"] == 0
 
 
 def test_incomplete_fallback_url_only_fallback_client_is_primary(monkeypatch):

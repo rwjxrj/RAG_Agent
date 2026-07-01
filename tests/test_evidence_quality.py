@@ -7,6 +7,7 @@ from app.search.base import EvidenceChunk
 from app.services.evidence_hygiene import compute_hygiene
 from app.services.evidence_quality import (
     evaluate_quality,
+    verify_policy_quality_false_negative,
     passes_quality_gate,
     QualityReport,
 )
@@ -173,6 +174,65 @@ async def test_evaluate_quality_marks_llm_failure_as_quality_unavailable():
     assert "quality_llm_failed" in report.missing_signals
     assert report.reason == "LLM quality assessment failed."
     assert report.hard_requirement_coverage == {"policy_language": False}
+
+
+@pytest.mark.asyncio
+async def test_focused_verification_accepts_exact_quote_from_authoritative_chunk():
+    text = "加入购物车并不会锁定库存，其他顾客仍然可以购买。只有提交订单并完成支付后才会预留库存。"
+    mock_resp = type(
+        "R",
+        (),
+        {"content": '{"supported":true,"chunk_id":"doc-004-chunk","quote":"加入购物车并不会锁定库存，其他顾客仍然可以购买。","reason":"原文直接回答"}'},
+    )()
+    with patch("app.services.llm_gateway.get_llm_gateway") as mock_gw:
+        mock_gw.return_value.chat = AsyncMock(return_value=mock_resp)
+        result = await verify_policy_quality_false_negative(
+            "放购物车里的衣服会不会被别人买走？",
+            [EvidenceChunk("doc-004-chunk", text, "eval://retrieval/doc-004", "faq", 1.0, text)],
+        )
+
+    assert result.supported is True
+    assert result.chunk_id == "doc-004-chunk"
+    assert result.quote == "加入购物车并不会锁定库存，其他顾客仍然可以购买。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected_reason"),
+    [
+        ({"supported": True, "chunk_id": "wrong", "quote": "加入购物车并不会锁定库存。", "reason": "x"}, "chunk_not_found"),
+        ({"supported": True, "chunk_id": "c1", "quote": "可以购买", "reason": "x"}, "quote_too_short"),
+        ({"supported": True, "chunk_id": "c1", "quote": "这是一段原文中不存在的完整引用。", "reason": "x"}, "quote_not_found"),
+    ],
+)
+async def test_focused_verification_rejects_unverifiable_quotes(payload, expected_reason):
+    import json
+
+    text = "加入购物车并不会锁定库存，其他顾客仍然可以购买。"
+    mock_resp = type("R", (), {"content": json.dumps(payload, ensure_ascii=False)})()
+    with patch("app.services.llm_gateway.get_llm_gateway") as mock_gw:
+        mock_gw.return_value.chat = AsyncMock(return_value=mock_resp)
+        result = await verify_policy_quality_false_negative(
+            "放购物车里的衣服会不会被别人买走？",
+            [EvidenceChunk("c1", text, "eval://retrieval/doc-004", "faq", 1.0, text)],
+        )
+
+    assert result.supported is False
+    assert result.reason == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_focused_verification_parse_failure_is_safe():
+    mock_resp = type("R", (), {"content": "{broken"})()
+    with patch("app.services.llm_gateway.get_llm_gateway") as mock_gw:
+        mock_gw.return_value.chat = AsyncMock(return_value=mock_resp)
+        result = await verify_policy_quality_false_negative(
+            "是否支持？",
+            [EvidenceChunk("c1", "这是足够长的权威政策原文。", "eval://doc", "policy", 1.0, "这是足够长的权威政策原文。")],
+        )
+
+    assert result.supported is False
+    assert result.reason == "verification_failed"
 
 
 def test_plan_retry_attempt_1():

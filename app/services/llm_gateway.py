@@ -163,6 +163,7 @@ _JSON_RESPONSE_TASKS = {
     "doc_type_router",
     "evidence_evaluator",
     "evidence_quality",
+    "evidence_quality_verify",
     "evidence_selector",
     "generate",
     "generate_reasoning",
@@ -280,6 +281,7 @@ class OpenAIGateway(LLMGateway):
         kwargs: dict = {
             "api_key": api_key,
             "timeout": self._settings.llm_timeout_seconds,
+            "max_retries": 0,
         }
         if base_url and base_url.strip():
             kwargs["base_url"] = base_url.strip()
@@ -296,6 +298,7 @@ class OpenAIGateway(LLMGateway):
             fw_kwargs: dict = {
                 "api_key": fallback_api_key,
                 "timeout": self._settings.llm_timeout_seconds,
+                "max_retries": 0,
             }
             fw_kwargs["base_url"] = fallback_base_url.strip()
             self._fallback_client = AsyncOpenAI(**fw_kwargs)
