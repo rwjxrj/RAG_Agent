@@ -156,6 +156,26 @@ async def test_simple_quality_pass_generate_skips_reasoning_prepass():
 
 
 @pytest.mark.asyncio
+async def test_generate_uses_original_query_language_when_effective_query_is_english():
+    llm = _RecordingLLM()
+    ctx = _simple_generate_context()
+    ctx.query = "你们的退款政策是什么？"
+    ctx.effective_query = "What is your refund policy?"
+    ctx.source_lang = "zh-cn"
+
+    await execute_generate(
+        ctx,
+        llm=llm,
+        orchestrator=_FakeOrchestrator(),
+        settings=_Settings(),
+    )
+
+    system_prompt = ctx.generate_output.messages[0]["content"]
+    assert "respond entirely in Chinese" in system_prompt
+    assert "respond entirely in English" not in system_prompt
+
+
+@pytest.mark.asyncio
 async def test_high_risk_generate_keeps_reasoning_prepass():
     llm = _RecordingLLM()
     ctx = _simple_generate_context()

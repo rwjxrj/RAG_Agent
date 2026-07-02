@@ -90,3 +90,12 @@
 - WHMCS cookies 过期或 TOTP 失败案例。
 - OpenSearch/Qdrant 索引重建流程。
 - MinIO 上传或对象读取失败案例。
+
+## 2026-07-02 - 中文问题因英文规范化查询生成英文回答
+- 现象：输入“你们的退款政策是什么？”，`source_lang` 已识别为 `zh-cn`，最终回答仍为全英文。
+- 影响：中文客服问题经过 RAG 检索后可能返回英文，客户提示词中的英文示例会进一步强化该偏差。
+- 根因：`PipelineRunner` 将 `canonical_query_en` 写入 `effective_query`；生成阶段又用 `effective_query` 判断输出语言，最终提示明确要求模型使用 English。区域码 `zh-cn`、`zh-tw` 也未被语言映射识别。
+- 修复：英文 `effective_query` 继续用于检索，但生成阶段改用原始 `ctx.query` 判断回答语言；语言指令将区域码归一化为基础语言码。
+- 验证：调用链回归测试在修复前产生英文指令，修复后产生中文指令；全量 `pytest tests/ -q` 为 573 passed。
+- 相关文件：`app/services/phases/generate.py`、`app/services/answer_utils.py`、`tests/test_generate_phase.py`、`tests/test_answer_decision_hardening.py`
+- 后续注意：内部检索查询语言与用户输出语言必须分离；调用链测试应同时设置中文原问题和英文 effective query。

@@ -230,6 +230,9 @@ flowchart TD
   AC --> AD["conversation 入口保存 assistant Message/Citation/debug_metadata"]
 ```
 
+- `canonical_query_en` 仅用于检索和规范化；`execute_generate()` 的最终回答语言始终依据原始 `ctx.query` 判断，避免中文问题因英文检索查询而生成英文回答。
+- `source_lang` 回退路径会把 `zh-cn`、`zh-tw`、`zh_CN` 等区域码归一化为 `zh`。
+
 ## 函数级检索链路
 
 ```mermaid

@@ -447,7 +447,7 @@ async def execute_generate(
     system_prompt = get_system_prompt()
     system_prompt = (
         f"{system_prompt}\n\n"
-        f"{format_answer_plan_instruction(answer_plan, ctx.quality_report, source_lang=ctx.source_lang, query_text=ctx.effective_query or ctx.query)}"
+        f"{format_answer_plan_instruction(answer_plan, ctx.quality_report, source_lang=ctx.source_lang, query_text=ctx.query)}"
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if ctx.conversation_history:

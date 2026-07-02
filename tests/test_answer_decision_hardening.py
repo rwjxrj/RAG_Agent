@@ -313,6 +313,13 @@ class TestIssue04DeterministicLanguage:
         ko_inst = _build_language_instruction("ko")
         assert "Korean" in ko_inst
 
+    @pytest.mark.parametrize("language", ["zh-cn", "zh-tw", "zh_CN"])
+    def test_chinese_regional_language_codes_are_normalized(self, language):
+        instruction = _build_language_instruction(language)
+
+        assert "Chinese" in instruction
+        assert "English" not in instruction
+
     def test_format_instruction_uses_query_text_over_source_lang(self):
         """format_answer_plan_instruction should use query_text for language, ignoring source_lang."""
         plan = AnswerPlan(

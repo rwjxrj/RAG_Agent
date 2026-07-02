@@ -541,13 +541,14 @@ def _build_language_instruction(detected_lang: str) -> str:
     Returns a single, unambiguous language instruction to avoid conflicting
     directives when upstream source_lang is misdetected.
     """
+    normalized_lang = (detected_lang or "en").strip().lower().replace("_", "-").split("-", 1)[0]
     lang_map = {
         "zh": "Chinese (中文)",
         "ja": "Japanese (日本語)",
         "ko": "Korean (한국어)",
         "en": "English",
     }
-    target = lang_map.get(detected_lang, "English")
+    target = lang_map.get(normalized_lang, "English")
     return f"LANGUAGE: You MUST respond entirely in {target}. Match the language of the user's question."
 
 
