@@ -34,6 +34,7 @@ class _FakeOpenAIClient:
 
 @pytest.mark.asyncio
 async def test_openai_embedding_provider_uses_embedding_specific_config(monkeypatch):
+    monkeypatch.setattr(embeddings, "get_embedding_provider_name", lambda: "openai")
     monkeypatch.setattr(
         embeddings,
         "get_embedding_model",
@@ -55,6 +56,30 @@ async def test_openai_embedding_provider_uses_embedding_specific_config(monkeypa
     assert _FakeOpenAIClient.last_instance is not None
     assert _FakeOpenAIClient.last_instance.embeddings.calls == [
         {"model": "text-embedding-3-small", "input": ["hello"]}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_aliyun_embedding_provider_passes_configured_dimensions(monkeypatch):
+    monkeypatch.setattr(embeddings, "get_embedding_provider_name", lambda: "aliyun")
+    monkeypatch.setattr(embeddings, "get_embedding_model", lambda: "text-embedding-v4")
+    monkeypatch.setattr(embeddings, "get_embedding_dimensions", lambda: 1024)
+    monkeypatch.setattr(embeddings, "get_embedding_api_key", lambda: "dashscope-key")
+    monkeypatch.setattr(
+        embeddings,
+        "get_embedding_base_url",
+        lambda: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    monkeypatch.setattr(embeddings, "AsyncOpenAI", _FakeOpenAIClient)
+
+    provider = embeddings.get_embedding_provider()
+    vectors = await provider.embed(["你好"])
+
+    assert vectors == [[0.1, 0.2, 0.3]]
+    assert isinstance(provider, embeddings.OpenAIEmbeddingProvider)
+    assert _FakeOpenAIClient.last_instance is not None
+    assert _FakeOpenAIClient.last_instance.embeddings.calls == [
+        {"model": "text-embedding-v4", "input": ["你好"], "dimensions": 1024}
     ]
 
 

@@ -33,10 +33,13 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             return []
 
         try:
-            response = await self._client.embeddings.create(
-                model=get_embedding_model(),
-                input=texts,
-            )
+            request: dict = {
+                "model": get_embedding_model(),
+                "input": texts,
+            }
+            if get_embedding_provider_name() == "aliyun":
+                request["dimensions"] = get_embedding_dimensions()
+            response = await self._client.embeddings.create(**request)
             return [d.embedding for d in response.data]
         except Exception as e:
             logger.error("embedding_failed", error=str(e))
@@ -82,7 +85,7 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
 def get_embedding_provider() -> EmbeddingProvider:
     """Factory for embedding provider."""
     provider = get_embedding_provider_name()
-    if provider in {"openai", "custom"}:
+    if provider in {"openai", "custom", "aliyun"}:
         return OpenAIEmbeddingProvider()
     if provider == "ollama":
         return OllamaEmbeddingProvider()

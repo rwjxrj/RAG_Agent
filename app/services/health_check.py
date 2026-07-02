@@ -20,6 +20,9 @@ def _sanitize_error(error: Exception, context: str = "model") -> str:
     msg = str(error).lower()
     err_type = type(error).__name__
 
+    if "向量维度不一致" in str(error):
+        return str(error)
+
     if any(k in msg for k in ("timeout", "timed out", "deadline")):
         return "连接超时，请检查网络和服务地址"
     if any(k in msg for k in ("connection refused", "econnrefused")):
@@ -140,12 +143,17 @@ async def _check_embedding() -> str:
     model = get_embedding_model()
     dims = get_embedding_dimensions()
 
-    if provider in {"openai", "custom"}:
+    if provider in {"openai", "custom", "aliyun"}:
         api_key = get_embedding_api_key()
         base_url = get_embedding_base_url()
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        resp = await client.embeddings.create(model=model, input=["test"])
+        request: dict = {"model": model, "input": ["test"]}
+        if provider == "aliyun":
+            request["dimensions"] = dims
+        resp = await client.embeddings.create(**request)
         actual_dims = len(resp.data[0].embedding)
+        if actual_dims != dims:
+            raise ValueError(f"向量维度不一致：期望 {dims}，实际 {actual_dims}")
         return f"{model} ({actual_dims}d) via {provider}"
     elif provider == "ollama":
         import httpx

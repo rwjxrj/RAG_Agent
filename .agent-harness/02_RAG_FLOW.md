@@ -115,6 +115,7 @@ flowchart LR
 ```
 
 - 向量空间指纹由 provider、model、dimensions、规范化 Base URL 组成；只修改 API key 不要求重建。
+- `aliyun` provider 复用 OpenAI-compatible embeddings 接口，设置页默认填入 `text-embedding-v4`、1024 维和 `https://dashscope.aliyuncs.com/compatible-mode/v1`；请求显式传递 `dimensions`，健康检查校验实际返回维度。
 - 重建只读取 PostgreSQL `chunks` 并重写 Qdrant，不重新分块、不修改 PostgreSQL chunk，也不重建 OpenSearch。
 - 固定意图或无需 retrieval 的直接回答不受维护状态影响；进入 `RetrievalService.retrieve()` 时会检查状态。
 - worker 在删除 collection 前先调用 embedding 探测并校验维度，失败时保留原 collection；删除后发生失败则保持 `failed`，管理员需从头重试。

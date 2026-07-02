@@ -249,7 +249,7 @@ export interface LLMConfigUpdate {
 }
 
 export interface EmbeddingConfig {
-  embedding_provider: 'openai' | 'custom' | 'ollama'
+  embedding_provider: 'openai' | 'custom' | 'aliyun' | 'ollama'
   embedding_model: string
   embedding_dimensions: number
   embedding_api_key: string
@@ -257,7 +257,7 @@ export interface EmbeddingConfig {
 }
 
 export interface EmbeddingConfigUpdate {
-  embedding_provider?: 'openai' | 'custom' | 'ollama'
+  embedding_provider?: 'openai' | 'custom' | 'aliyun' | 'ollama'
   embedding_model?: string
   embedding_dimensions?: number
   embedding_api_key?: string

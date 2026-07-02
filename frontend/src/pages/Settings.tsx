@@ -247,7 +247,7 @@ export default function Settings() {
   const [llmFallbackBaseUrl, setLlmFallbackBaseUrl] = useState('')
   const [llmProviderPreset, setLlmProviderPreset] = useState<LlmProviderPresetKey>('custom')
 
-  const [embeddingProvider, setEmbeddingProvider] = useState<'openai' | 'custom' | 'ollama'>('openai')
+  const [embeddingProvider, setEmbeddingProvider] = useState<'openai' | 'custom' | 'aliyun' | 'ollama'>('openai')
   const [embeddingModel, setEmbeddingModel] = useState('')
   const [embeddingDimensions, setEmbeddingDimensions] = useState(1536)
   const [embeddingApiKey, setEmbeddingApiKey] = useState('')
@@ -629,9 +629,13 @@ export default function Settings() {
     setLlmBaseUrl(preset.baseUrl)
   }
 
-  const handleEmbeddingProviderChange = (value: 'openai' | 'custom' | 'ollama') => {
+  const handleEmbeddingProviderChange = (value: 'openai' | 'custom' | 'aliyun' | 'ollama') => {
     setEmbeddingProvider(value)
-    if (value === 'ollama') {
+    if (value === 'aliyun') {
+      setEmbeddingModel('text-embedding-v4')
+      setEmbeddingDimensions(1024)
+      setEmbeddingBaseUrl('https://dashscope.aliyuncs.com/compatible-mode/v1')
+    } else if (value === 'ollama') {
       setEmbeddingModel('nomic-embed-text')
       setEmbeddingDimensions(768)
       setEmbeddingApiKey('')
@@ -945,12 +949,13 @@ export default function Settings() {
             <label className="block text-xs font-medium text-zinc-500 mb-1.5">向量化供应商</label>
             <select
               value={embeddingProvider}
-              onChange={(e) => handleEmbeddingProviderChange(e.target.value as 'openai' | 'custom' | 'ollama')}
+              onChange={(e) => handleEmbeddingProviderChange(e.target.value as 'openai' | 'custom' | 'aliyun' | 'ollama')}
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               disabled={embeddingBusy}
             >
               <option value="openai">OpenAI-compatible</option>
               <option value="custom">自定义 OpenAI-compatible</option>
+              <option value="aliyun">阿里云百炼</option>
               <option value="ollama">Ollama 本地</option>
             </select>
           </div>
@@ -960,7 +965,7 @@ export default function Settings() {
               type="text"
               value={embeddingModel}
               onChange={(e) => setEmbeddingModel(e.target.value)}
-              placeholder={embeddingProvider === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small'}
+              placeholder={embeddingProvider === 'ollama' ? 'nomic-embed-text' : embeddingProvider === 'aliyun' ? 'text-embedding-v4' : 'text-embedding-3-small'}
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               disabled={embeddingBusy}
             />
@@ -972,7 +977,7 @@ export default function Settings() {
               min={1}
               value={embeddingDimensions}
               onChange={(e) => setEmbeddingDimensions(Number(e.target.value) || 1)}
-              placeholder={embeddingProvider === 'ollama' ? '768' : '1536'}
+              placeholder={embeddingProvider === 'ollama' ? '768' : embeddingProvider === 'aliyun' ? '1024' : '1536'}
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               disabled={embeddingBusy}
             />
@@ -1002,12 +1007,14 @@ export default function Settings() {
               type="url"
               value={embeddingBaseUrl}
               onChange={(e) => setEmbeddingBaseUrl(e.target.value)}
-              placeholder={embeddingProvider === 'ollama' ? 'http://host.docker.internal:11434' : 'https://api.openai.com/v1'}
+              placeholder={embeddingProvider === 'ollama' ? 'http://host.docker.internal:11434' : embeddingProvider === 'aliyun' ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' : 'https://api.openai.com/v1'}
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
               disabled={embeddingBusy}
             />
             <p className="text-xs text-zinc-500 mt-1">
-              Docker 中访问宿主机 Ollama 用 host.docker.internal；非 Docker 同机运行可用 http://localhost:11434。
+              {embeddingProvider === 'aliyun'
+                ? '阿里云百炼默认使用通用 OpenAI 兼容地址，无需填写 WorkspaceId。'
+                : 'Docker 中访问宿主机 Ollama 用 host.docker.internal；非 Docker 同机运行可用 http://localhost:11434。'}
             </p>
           </div>
           <button

@@ -282,7 +282,7 @@ class LLMConfigUpdateRequest(BaseModel):
 class EmbeddingConfigResponse(BaseModel):
     """Embedding config - from DB with env fallback."""
 
-    embedding_provider: Literal["openai", "custom", "ollama"]
+    embedding_provider: Literal["openai", "custom", "aliyun", "ollama"]
     embedding_model: str
     embedding_dimensions: int
     embedding_api_key: str
@@ -292,7 +292,7 @@ class EmbeddingConfigResponse(BaseModel):
 class EmbeddingConfigUpdateRequest(BaseModel):
     """Partial update for embedding config."""
 
-    embedding_provider: Literal["openai", "custom", "ollama"] | None = None
+    embedding_provider: Literal["openai", "custom", "aliyun", "ollama"] | None = None
     embedding_model: str | None = None
     embedding_dimensions: int | None = Field(default=None, gt=0)
     embedding_api_key: str | None = None
