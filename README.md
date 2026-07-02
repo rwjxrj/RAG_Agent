@@ -21,7 +21,7 @@
 > 推荐路径：`docs/images/chat-interface.png`
 
 <!-- 替换图片后删除上方占位文字，并取消下面一行的注释。 -->
-<!-- ![客服对话与引用展示](docs/images/chat-interface.png) -->
+![客服对话与引用展示](docs/images/chat-interface.png)
 
 <table>
   <tr>
