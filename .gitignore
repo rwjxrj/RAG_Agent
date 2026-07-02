@@ -5,6 +5,19 @@
 # Claude Code session state
 .claude/
 
+# AI coding tools and generated metadata
+.agents/
+.cursor/
+.understand-anything/
+skills-lock.json
+
+# Personal/local generated outputs
+outputs/
+
+# Scratch runtime cache (keep tracked PRDs and evaluation scripts)
+.scratch/**/__pycache__/
+.scratch/**/*.pyc
+
 .idea/
 .history
 # Company/proprietary knowledge base - do not commit
