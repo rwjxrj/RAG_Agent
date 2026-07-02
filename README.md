@@ -300,6 +300,8 @@ Vite 本地开发默认访问 `http://localhost:5173`；Docker 前端访问 `htt
 | Admin | `PATCH /v1/admin/tickets/{id}/approval` | 更新工单审批状态。 |
 | Admin | `GET/PUT /v1/admin/config/llm` | LLM 配置。 |
 | Admin | `GET/PUT /v1/admin/config/embedding` | Embedding 配置。 |
+| Admin | `GET /v1/admin/vector-index/status` | 查询向量索引重建状态和进度。 |
+| Admin | `POST /v1/admin/vector-index/rebuild` | 异步重建 Qdrant 向量索引。 |
 | Admin | `GET/PUT /v1/admin/config/reranker` | Reranker 配置。 |
 | Admin | `GET/PUT /v1/admin/config/archi` | RAG 架构开关。 |
 | Admin | `GET/POST/PUT/DELETE /v1/admin/intents` | 意图缓存管理。 |
@@ -611,7 +613,8 @@ $bv = $data.summary.benchmark_validity
 | 前端无法登录 | 确认已运行迁移和 `create_admin_user`，并检查 JWT 配置。 |
 | API 返回 401 | 检查 Bearer JWT、`X-API-Key` 或 `X-Admin-API-Key` 是否正确。 |
 | 入库后检索不到内容 | 先运行 `make ingest-dry` 检查 source 格式，再看 api/worker 日志和 OpenSearch/Qdrant 状态。 |
-| 切换 embedding 模型后检索异常 | 确认 `EMBEDDING_DIMENSIONS` 与 Qdrant collection 维度一致，必要时重新建索引并重新入库。 |
+| 切换 embedding 模型后知识库问答暂停 | 在 Settings 的“向量化模型”中确认配置和维度，然后执行“重建向量索引”；完成前系统会阻止检索，避免混用新旧向量空间。 |
+| 向量索引重建失败 | 在 Settings 查看脱敏错误，修正模型、Base URL、API key 或维度后重新执行；失败状态下不会自动恢复知识库问答。 |
 
 | 综合健康检查失败 | 在管理台健康检查页或 `POST /v1/health/check` 查看具体服务、延迟和脱敏错误；模型检查会产生少量真实请求。 |
 | LLM 无响应或模型错误 | 检查 Settings 中 LLM 配置、`.env` fallback、`OPENAI_BASE_URL` 和 provider 模型名。 |

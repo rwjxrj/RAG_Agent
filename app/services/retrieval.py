@@ -120,6 +120,7 @@ class RetrievalService:
         self._settings = get_settings()
         self._opensearch = opensearch or OpenSearchClient()
         self._qdrant = qdrant or QdrantSearchClient()
+        self._owns_embedder = embedding_provider is None
         self._embedder = embedding_provider or get_embedding_provider()
         self._reranker = reranker or get_reranker_provider()
         self._opensearch_timeout_s = self._float_setting("retrieval_opensearch_timeout_seconds", 6.0)
@@ -1130,6 +1131,11 @@ class RetrievalService:
         retrieval_plan: RetrievalPlan | None = None,
     ) -> EvidencePack:
         """Execute hybrid retrieval pipeline. Workstream 3: plan → CandidatePool → EvidenceSet."""
+        if self._owns_embedder:
+            from app.services.vector_index_rebuild import refresh_embedding_runtime_if_ready
+
+            await refresh_embedding_runtime_if_ready()
+            self._embedder = get_embedding_provider()
         # 1. Resolve effective query
         effective_query = (
             retry_strategy.suggested_query if retry_strategy and retry_strategy.suggested_query else query

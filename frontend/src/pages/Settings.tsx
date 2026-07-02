@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { admin, type ArchiConfig } from '../api/client'
+import { admin, type ArchiConfig, type VectorIndexStatus } from '../api/client'
 import SettingsNavigation, {
   isSettingsSection,
   type SettingsSection,
@@ -229,6 +229,8 @@ export default function Settings() {
   const [dirtySections, setDirtySections] = useState<Set<SettingsSection>>(new Set())
   const [saving, setSaving] = useState(false)
   const [savingEmbedding, setSavingEmbedding] = useState(false)
+  const [startingVectorRebuild, setStartingVectorRebuild] = useState(false)
+  const [vectorIndexStatus, setVectorIndexStatus] = useState<VectorIndexStatus | null>(null)
   const [savingArchi, setSavingArchi] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshingConversationCache, setRefreshingConversationCache] = useState(false)
@@ -356,12 +358,16 @@ export default function Settings() {
         setLlmFallbackBaseUrl(llmData.llm_fallback_base_url)
         setLlmProviderPreset(detectLlmProviderPreset(llmData.llm_base_url, llmData.llm_model))
       } else if (section === 'embedding') {
-        const embeddingData = await admin.getEmbeddingConfig()
+        const [embeddingData, indexStatus] = await Promise.all([
+          admin.getEmbeddingConfig(),
+          admin.getVectorIndexStatus(),
+        ])
         setEmbeddingProvider(embeddingData.embedding_provider)
         setEmbeddingModel(embeddingData.embedding_model)
         setEmbeddingDimensions(embeddingData.embedding_dimensions)
         setEmbeddingApiKey(embeddingData.embedding_api_key)
         setEmbeddingBaseUrl(embeddingData.embedding_base_url)
+        setVectorIndexStatus(indexStatus)
       } else if (section === 'reranker') {
         const rerankerData = await admin.getRerankerConfig()
         setRerankerProvider(rerankerData.reranker_provider)
@@ -405,6 +411,18 @@ export default function Settings() {
     return () => window.removeEventListener('beforeunload', warnBeforeUnload)
   }, [dirtySections])
 
+  useEffect(() => {
+    if (
+      activeSection !== 'embedding' ||
+      !vectorIndexStatus ||
+      !['queued', 'running'].includes(vectorIndexStatus.status)
+    ) return
+    const timer = window.setInterval(() => {
+      void admin.getVectorIndexStatus().then(setVectorIndexStatus).catch(() => undefined)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [activeSection, vectorIndexStatus?.status])
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -445,6 +463,27 @@ export default function Settings() {
     }
   }
 
+  const startVectorIndexRebuild = async (confirmed = false) => {
+    if (!confirmed && !window.confirm('重建会删除并重新生成全部 Qdrant 向量，完成前知识库问答暂停。是否继续？')) return
+    setError(null)
+    setSuccess(null)
+    setStartingVectorRebuild(true)
+    try {
+      const status = await admin.rebuildVectorIndex()
+      setVectorIndexStatus(status)
+      setSuccess('向量索引重建任务已提交，知识库问答将在完成后自动恢复。')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '启动向量索引重建失败')
+      try {
+        setVectorIndexStatus(await admin.getVectorIndexStatus())
+      } catch {
+        // Keep the last known status when the status endpoint is unavailable.
+      }
+    } finally {
+      setStartingVectorRebuild(false)
+    }
+  }
+
   const handleSaveEmbedding = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -464,7 +503,17 @@ export default function Settings() {
       setEmbeddingDimensions(data.embedding_dimensions)
       setEmbeddingApiKey(data.embedding_api_key)
       setEmbeddingBaseUrl(data.embedding_base_url)
-      setSuccess('向量化模型配置已保存，缓存已刷新。')
+      const indexStatus = await admin.getVectorIndexStatus()
+      setVectorIndexStatus(indexStatus)
+      if (indexStatus.status === 'required') {
+        if (window.confirm('向量空间配置已变化，知识库问答现已暂停。是否立即重建向量索引？')) {
+          await startVectorIndexRebuild(true)
+        } else {
+          setSuccess('向量化配置已保存。请完成向量索引重建后再使用知识库问答。')
+        }
+      } else {
+        setSuccess('向量化模型配置已保存，现有向量索引仍然有效。')
+      }
       markSaved('embedding')
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存向量化配置失败')
@@ -624,6 +673,9 @@ export default function Settings() {
       setSavingPrompt(false)
     }
   }
+
+  const vectorRebuildActive = vectorIndexStatus?.status === 'queued' || vectorIndexStatus?.status === 'running'
+  const embeddingBusy = savingEmbedding || startingVectorRebuild || vectorRebuildActive
 
   return (
     <div className="animate-slide-up max-w-5xl space-y-6">
@@ -840,6 +892,54 @@ export default function Settings() {
         <p className="text-sm text-zinc-400 mb-5">
           上传知识库时用于生成向量，和 LLM 是两类模型。Ollama 本地模型建议使用 nomic-embed-text。
         </p>
+        {vectorIndexStatus && <div className={`mb-5 rounded-xl border p-4 ${
+          vectorIndexStatus.status === 'ready'
+            ? 'border-emerald-500/20 bg-emerald-500/5'
+            : vectorIndexStatus.status === 'failed'
+              ? 'border-red-500/20 bg-red-500/5'
+              : 'border-amber-500/20 bg-amber-500/5'
+        }`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-white">
+                {vectorIndexStatus.status === 'ready'
+                  ? <CheckCircle2 size={16} className="text-emerald-400" />
+                  : vectorIndexStatus.status === 'failed'
+                    ? <AlertCircle size={16} className="text-red-400" />
+                    : <Loader2 size={16} className={vectorRebuildActive ? 'animate-spin text-amber-400' : 'text-amber-400'} />}
+                向量索引：{{
+                  ready: '可用',
+                  required: '等待重建',
+                  queued: '等待执行',
+                  running: '正在重建',
+                  failed: '重建失败',
+                }[vectorIndexStatus.status]}
+              </div>
+              {vectorRebuildActive && <p className="mt-1 text-xs text-zinc-400">
+                已处理 {vectorIndexStatus.processed_chunks} / {vectorIndexStatus.total_chunks} 个知识块；完成前知识库问答暂停。
+              </p>}
+              {vectorIndexStatus.status === 'required' && <p className="mt-1 text-xs text-amber-300">
+                当前配置与已有向量空间不一致，必须重建后才能恢复知识库问答。
+              </p>}
+              {vectorIndexStatus.error && <p className="mt-1 text-xs text-red-300 break-words">{vectorIndexStatus.error}</p>}
+            </div>
+            {(vectorIndexStatus.status === 'required' || vectorIndexStatus.status === 'failed') && <button
+              type="button"
+              onClick={() => void startVectorIndexRebuild()}
+              disabled={embeddingBusy}
+              className="flex items-center gap-2 rounded-lg bg-amber-500 px-3 py-2 text-xs font-medium text-black disabled:opacity-50"
+            >
+              {startingVectorRebuild ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              重建向量索引
+            </button>}
+          </div>
+          {vectorRebuildActive && vectorIndexStatus.total_chunks > 0 && <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+            <div
+              className="h-full bg-amber-400 transition-all"
+              style={{ width: `${Math.min(100, (vectorIndexStatus.processed_chunks / vectorIndexStatus.total_chunks) * 100)}%` }}
+            />
+          </div>}
+        </div>}
         <form onSubmit={handleSaveEmbedding} onChange={() => markDirty('embedding')} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-zinc-500 mb-1.5">向量化供应商</label>
@@ -847,7 +947,7 @@ export default function Settings() {
               value={embeddingProvider}
               onChange={(e) => handleEmbeddingProviderChange(e.target.value as 'openai' | 'custom' | 'ollama')}
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
-              disabled={savingEmbedding}
+              disabled={embeddingBusy}
             >
               <option value="openai">OpenAI-compatible</option>
               <option value="custom">自定义 OpenAI-compatible</option>
@@ -862,7 +962,7 @@ export default function Settings() {
               onChange={(e) => setEmbeddingModel(e.target.value)}
               placeholder={embeddingProvider === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small'}
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
-              disabled={savingEmbedding}
+              disabled={embeddingBusy}
             />
           </div>
           <div>
@@ -874,9 +974,9 @@ export default function Settings() {
               onChange={(e) => setEmbeddingDimensions(Number(e.target.value) || 1)}
               placeholder={embeddingProvider === 'ollama' ? '768' : '1536'}
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
-              disabled={savingEmbedding}
+              disabled={embeddingBusy}
             />
-            <p className="text-xs text-zinc-500 mt-1">更换模型或维度后，已有知识库通常需要重新上传或重新入库。</p>
+            <p className="text-xs text-zinc-500 mt-1">更换供应商、模型、维度或 Base URL 后，需要在本页重建向量索引。</p>
           </div>
           <div>
             <label className="block text-xs font-medium text-zinc-500 mb-1.5 flex items-center gap-1.5">
@@ -889,7 +989,7 @@ export default function Settings() {
               onChange={(e) => setEmbeddingApiKey(e.target.value)}
               placeholder={embeddingProvider === 'ollama' ? 'Ollama 通常留空' : '留空则回退到 LLM API key'}
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
-              disabled={savingEmbedding}
+              disabled={embeddingBusy}
               autoComplete="off"
             />
           </div>
@@ -904,7 +1004,7 @@ export default function Settings() {
               onChange={(e) => setEmbeddingBaseUrl(e.target.value)}
               placeholder={embeddingProvider === 'ollama' ? 'http://host.docker.internal:11434' : 'https://api.openai.com/v1'}
               className="w-full px-4 py-2.5 rounded-xl input-glass text-sm font-mono"
-              disabled={savingEmbedding}
+              disabled={embeddingBusy}
             />
             <p className="text-xs text-zinc-500 mt-1">
               Docker 中访问宿主机 Ollama 用 host.docker.internal；非 Docker 同机运行可用 http://localhost:11434。
@@ -912,7 +1012,7 @@ export default function Settings() {
           </div>
           <button
             type="submit"
-            disabled={savingEmbedding || !embeddingModel.trim()}
+            disabled={embeddingBusy || !embeddingModel.trim()}
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             style={{
               background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',

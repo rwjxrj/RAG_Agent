@@ -5,6 +5,7 @@ import json
 import queue
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -22,6 +23,7 @@ from app.api.schemas import (
     DocTypeUpdateRequest,
     EmbeddingConfigResponse,
     EmbeddingConfigUpdateRequest,
+    VectorIndexStatusResponse,
     RerankerConfigResponse,
     RerankerConfigUpdateRequest,
     SystemPromptResponse,
@@ -551,7 +553,34 @@ async def update_embedding_config(
 ):
     """Update embedding config. Only provided fields are updated."""
     from app.db.models import generate_uuid
+    from app.services.vector_index_rebuild import (
+        VectorIndexConflictError,
+        build_embedding_fingerprint,
+        lock_embedding_config_for_update,
+        mark_vector_index_rebuild_required,
+        vector_space_changed,
+    )
 
+    try:
+        current_status = await lock_embedding_config_for_update(db)
+    except VectorIndexConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    from app.services.embedding_config import (
+        get_embedding_api_key,
+        get_embedding_base_url,
+        get_embedding_dimensions,
+        get_embedding_model,
+        get_embedding_provider_name,
+    )
+
+    before = {
+        "embedding_provider": get_embedding_provider_name(),
+        "embedding_model": get_embedding_model(),
+        "embedding_dimensions": get_embedding_dimensions(),
+        "embedding_api_key": get_embedding_api_key(),
+        "embedding_base_url": get_embedding_base_url(),
+    }
     keys_to_update: list[tuple[str, str]] = []
     if body.embedding_provider is not None:
         keys_to_update.append(("embedding_provider", body.embedding_provider))
@@ -574,6 +603,29 @@ async def update_embedding_config(
             db.add(row)
     await db.flush()
     await refresh_embedding_config(db)
+    after = {
+        "embedding_provider": get_embedding_provider_name(),
+        "embedding_model": get_embedding_model(),
+        "embedding_dimensions": get_embedding_dimensions(),
+        "embedding_api_key": get_embedding_api_key(),
+        "embedding_base_url": get_embedding_base_url(),
+    }
+    if vector_space_changed(before, after):
+        old_fingerprint = current_status.indexed_fingerprint or build_embedding_fingerprint(
+            str(before["embedding_provider"]),
+            str(before["embedding_model"]),
+            int(before["embedding_dimensions"]),
+            str(before["embedding_base_url"]),
+            str(before["embedding_api_key"]),
+        )
+        try:
+            await mark_vector_index_rebuild_required(
+                db,
+                indexed_fingerprint=old_fingerprint,
+                lock=False,
+            )
+        except VectorIndexConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     from app.services.embedding_config import (
         get_embedding_api_key,
@@ -590,6 +642,65 @@ async def update_embedding_config(
         embedding_api_key=get_embedding_api_key(),
         embedding_base_url=get_embedding_base_url(),
     )
+
+
+def _vector_index_response(status) -> VectorIndexStatusResponse:
+    return VectorIndexStatusResponse(
+        status=status.status,
+        job_id=status.job_id,
+        processed_chunks=status.processed_chunks,
+        total_chunks=status.total_chunks,
+        error=status.error,
+        updated_at=status.updated_at,
+    )
+
+
+@router.get("/vector-index/status", response_model=VectorIndexStatusResponse)
+async def get_vector_index_rebuild_status(
+    db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(verify_admin_api_key),
+):
+    from app.services.vector_index_rebuild import get_vector_index_status
+
+    return _vector_index_response(await get_vector_index_status(db))
+
+
+@router.post(
+    "/vector-index/rebuild",
+    response_model=VectorIndexStatusResponse,
+    status_code=202,
+)
+async def start_vector_index_rebuild(
+    db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(verify_admin_api_key),
+):
+    from app.services.vector_index_rebuild import (
+        VectorIndexConflictError,
+        queue_vector_index_rebuild,
+        sanitize_rebuild_error,
+        update_rebuild_job_status,
+    )
+    from worker.tasks import rebuild_vector_index_task
+
+    job_id = str(uuid4())
+    try:
+        status = await queue_vector_index_rebuild(db, job_id)
+        await db.commit()
+    except VectorIndexConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    try:
+        rebuild_vector_index_task.apply_async(task_id=job_id)
+    except Exception as exc:
+        await update_rebuild_job_status(
+            db,
+            job_id=job_id,
+            status="failed",
+            error=sanitize_rebuild_error(exc),
+        )
+        await db.commit()
+        raise HTTPException(status_code=503, detail="无法启动向量索引重建任务。") from exc
+    return _vector_index_response(status)
 
 
 @router.get("/config/reranker", response_model=RerankerConfigResponse)

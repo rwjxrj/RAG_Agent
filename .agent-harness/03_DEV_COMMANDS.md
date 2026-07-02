@@ -78,6 +78,19 @@ pytest tests/test_answer_service.py -v
 - `celery` 本地启动 worker。
 - 修改某个服务时优先跑对应的窄测试，再考虑全量测试。
 
+## 向量索引维护
+
+以下接口会读取或重建 Qdrant。`POST` 会删除并重新创建当前 collection，只能在确认目标环境后执行。
+
+```powershell
+curl -H "X-Admin-API-Key: <admin-key>" http://localhost:8000/v1/admin/vector-index/status
+curl -X POST -H "X-Admin-API-Key: <admin-key>" http://localhost:8000/v1/admin/vector-index/rebuild
+```
+
+- 正常状态流转为 `required -> queued -> running -> ready`；失败为 `failed`。
+- `queued` 或 `running` 时不能再次提交任务或修改 embedding 配置。
+- 优先从 Settings 页面执行，以获得风险确认、进度和失败提示。
+
 ## 前端开发
 
 ```powershell
