@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Framework architecture PNG diagrams** (`docs/images/`): Three visual diagrams covering system architecture, chat interface mockup, and dashboard/health-check/document-management views.
 - **Suggest Reply API** (`POST /v1/reply/generate`): Platform-agnostic endpoint for generating suggested replies. Stateless, no conversation required. Use for ticket systems (WHMCS, Zendesk), livechat, or any helpdesk.
 - **Production config**: `CORS_ORIGINS` – restrict CORS to specific origins (comma-separated). Use `*` for allow all (dev).
 - **Production config**: `DOCS_ENABLED` – set to `false` to hide `/docs`, `/redoc`, and `/openapi.json` in production.

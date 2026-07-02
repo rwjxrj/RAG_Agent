@@ -683,7 +683,7 @@ export default function Settings() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">设置</h1>
           <p className="text-sm text-zinc-500 mt-1.5">
-            配置 LLM 模型、API Token 和 Base URL。优先使用数据库配置，缺省时回退到环境变量。
+            配置 LLM 模型、API 令牌和 Base URL。优先使用数据库配置，缺省时回退到环境变量。
           </p>
         </div>
         {activeSection !== 'cache' && <button
@@ -1192,7 +1192,7 @@ export default function Settings() {
           系统提示词
         </h2>
         <p className="text-sm text-zinc-400 mb-5">
-          生成回复时发送给 LLM 的系统提示词。修改后可定制聊天机器人行为，保存到数据库并刷新缓存。
+          生成回复时发送给 LLM 的系统提示词。修改后可定制 AI 助手行为，保存到数据库并刷新缓存。
         </p>
         <div className="mb-5 p-4 rounded-xl bg-violet-500/5 border border-violet-500/20">
           <div className="flex items-center gap-2 mb-2">

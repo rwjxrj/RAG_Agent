@@ -251,7 +251,7 @@ export default function ApiReference() {
           API 文档
         </h1>
         <p className="text-sm text-zinc-500 mt-1">
-          {spec.info?.title || '诡诡RAG搜索'} · Base URL: <code className="text-zinc-400">{API_BASE}</code>
+          {spec.info?.title || 'RAG 智能搜索'} · Base URL: <code className="text-zinc-400">{API_BASE}</code>
         </p>
       </header>
 

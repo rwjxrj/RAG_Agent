@@ -42,7 +42,7 @@ export default function Login() {
           </div>
           <div>
             <div className="font-semibold text-lg text-white flex items-center gap-1.5">
-              诡诡RAG搜索
+              RAG 智能搜索
               <Sparkles size={14} className="text-violet-400" />
             </div>
             <div className="text-sm text-zinc-500">管理控制台</div>

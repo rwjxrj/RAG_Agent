@@ -37,7 +37,7 @@ const NAV_ITEMS = [
   { to: '/doc-types', icon: FileType, label: '文档类型', match: ['/doc-types'] },
   { to: '/settings', icon: SettingsIcon, label: '设置', match: ['/settings'] },
   { to: '/health', icon: Activity, label: '健康检查', match: ['/health'] },
-  { to: '/tokens', icon: Key, label: 'API Token', match: ['/tokens'] },
+  { to: '/tokens', icon: Key, label: 'API 令牌', match: ['/tokens'] },
   { to: '/api-reference', icon: BookOpen, label: 'API 参考', match: ['/api-reference'] },
 ]
 
@@ -102,7 +102,7 @@ function App() {
           </div>
           <div>
             <div className="font-semibold text-[14px] text-white leading-tight flex items-center gap-1.5">
-              诡诡RAG搜索
+              RAG 智能搜索
               <Sparkles size={12} className="text-violet-400 opacity-70" />
             </div>
             <div className="text-[11px] text-zinc-500 leading-tight">管理控制台</div>
@@ -164,7 +164,7 @@ function App() {
               </button>
             </div>
           )}
-          <div className="text-[11px] text-zinc-600">v1.0 · 自动回复聊天机器人</div>
+          <div className="text-[11px] text-zinc-600">v1.0 · AI 问答助手</div>
         </div>
       </aside>
 
@@ -183,7 +183,7 @@ function App() {
             >
               <Bot size={13} style={{ color: '#fff' }} />
             </div>
-            <span className="font-semibold text-sm text-white">诡诡RAG搜索</span>
+            <span className="font-semibold text-sm text-white">RAG 智能搜索</span>
           </div>
         </header>
 
