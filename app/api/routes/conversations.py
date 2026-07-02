@@ -27,6 +27,7 @@ from app.db.models import Chunk, Conversation, Message, Citation
 from app.db.session import get_db
 from app.services.answer_service import AnswerService
 from app.services.conversation_context import truncate_for_pipeline
+from app.services.vector_index_rebuild import VectorIndexMaintenanceError
 
 logger = get_logger(__name__)
 
@@ -401,6 +402,10 @@ async def send_message_stream(
 
             yield sse({"type": "citations", "data": output.citations})
             yield sse({"type": "done", "data": {"decision": output.decision, "confidence": output.confidence}})
+        except VectorIndexMaintenanceError as e:
+            logger.info("conversation_stream_vector_index_maintenance", conversation_id=conversation_id)
+            await db.rollback()
+            yield sse({"type": "error", "data": str(e)})
         except Exception as e:
             logger.error("conversation_stream_failed", conversation_id=conversation_id, error=str(e))
             await db.rollback()

@@ -76,11 +76,14 @@
 - embedding provider 是否正常返回向量。
 - embedding 维度与 collection 是否一致。
 - 入库时是否写入 Qdrant。
+- `GET /v1/admin/vector-index/status` 是否为 `ready`；`required/queued/running/failed` 会主动暂停检索型问答。
+- `failed` 时先检查脱敏错误及 worker 日志；修正 embedding 配置后从 Settings 重新执行，不要直接向残缺 collection 写入。
 
 相关文件：
 - `app/search/qdrant_client.py`
 - `app/search/embeddings.py`
 - `app/services/embedding_config.py`
+- `app/services/vector_index_rebuild.py`
 
 ## 回答没有引用或引用错误
 检查：

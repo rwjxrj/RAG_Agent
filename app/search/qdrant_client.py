@@ -48,6 +48,28 @@ class QdrantSearchClient:
                 dimensions=dimensions,
             )
 
+    def recreate_collection(self, dimensions: int) -> None:
+        """Delete the configured collection if present, then recreate it."""
+        client = self._get_client()
+        collection_name = self._settings.qdrant_collection
+        if client.collection_exists(collection_name):
+            client.delete_collection(collection_name=collection_name)
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=qdrant_models.VectorParams(
+                size=dimensions,
+                distance=qdrant_models.Distance.COSINE,
+            ),
+            optimizers_config=qdrant_models.OptimizersConfigDiff(
+                indexing_threshold=10000,
+            ),
+        )
+        logger.info(
+            "qdrant_collection_recreated",
+            collection=collection_name,
+            dimensions=dimensions,
+        )
+
     def upsert_chunk(
         self,
         chunk_id: str,
@@ -79,6 +101,32 @@ class QdrantSearchClient:
                     payload=payload,
                 )
             ],
+        )
+
+    def upsert_chunks(self, chunks: list[dict]) -> None:
+        """Upsert a batch of prepared chunk/vector payloads."""
+        if not chunks:
+            return
+        points = []
+        for chunk in chunks:
+            payload = {
+                "chunk_id": chunk["chunk_id"],
+                "document_id": chunk["document_id"],
+                "chunk_text": chunk["chunk_text"],
+                "source_url": chunk["source_url"],
+                "doc_type": chunk["doc_type"],
+                **(chunk.get("metadata") or {}),
+            }
+            points.append(
+                qdrant_models.PointStruct(
+                    id=chunk["chunk_id"],
+                    vector=chunk["vector"],
+                    payload={key: value for key, value in payload.items() if value is not None},
+                )
+            )
+        self._get_client().upsert(
+            collection_name=self._settings.qdrant_collection,
+            points=points,
         )
 
     def delete_chunk(self, chunk_id: str) -> None:

@@ -98,6 +98,27 @@ flowchart TD
 - 事务边界已确认：`db_session.commit()` 在所有 chunk 的 embedding、Qdrant upsert、OpenSearch index 完成之后执行；函数内没有显式跨 PostgreSQL/OpenSearch/Qdrant 的补偿事务。
 - 索引失败路径已确认：`OpenSearchClient.index_chunk()` 和 `QdrantSearchClient.upsert_chunk()` 的异常会向上抛出；删除旧索引时 `delete_chunk()` 内部是 best-effort 记录 warning。
 
+### 向量模型切换与索引重建
+
+```mermaid
+flowchart LR
+  A["Settings 保存 embedding 配置"] --> B{"向量空间指纹变化?"}
+  B -->|否| C["索引保持 ready"]
+  B -->|是| D["状态置为 required，暂停检索型问答和向量化入库"]
+  D --> E["管理员确认重建"]
+  E --> F["Celery 探测模型和实际维度"]
+  F --> G["删除并重建 Qdrant collection"]
+  G --> H["读取 PostgreSQL chunks，分批 embedding + upsert"]
+  H --> I{"全部成功?"}
+  I -->|是| J["状态置为 ready，恢复检索"]
+  I -->|否| K["状态置为 failed，保持暂停并允许重试"]
+```
+
+- 向量空间指纹由 provider、model、dimensions、规范化 Base URL 组成；只修改 API key 不要求重建。
+- 重建只读取 PostgreSQL `chunks` 并重写 Qdrant，不重新分块、不修改 PostgreSQL chunk，也不重建 OpenSearch。
+- 固定意图或无需 retrieval 的直接回答不受维护状态影响；进入 `RetrievalService.retrieve()` 时会检查状态。
+- worker 在删除 collection 前先调用 embedding 探测并校验维度，失败时保留原 collection；删除后发生失败则保持 `failed`，管理员需从头重试。
+
 ## 查询流程
 
 ```mermaid

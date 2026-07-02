@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routes import admin, auth, conversations, dashboard, documents, health, reply, tickets
 from app.core.config import get_settings
@@ -12,6 +13,7 @@ from app.core.logging import setup_logging, get_logger
 from app.core.metrics_middleware import MetricsMiddleware
 from app.core.rate_limit import rate_limit_middleware
 from app.core.tracing import setup_tracing
+from app.services.vector_index_rebuild import VectorIndexMaintenanceError
 
 logger = get_logger(__name__)
 
@@ -56,6 +58,10 @@ def create_app() -> FastAPI:
         redoc_url=redoc_url,
         openapi_url=openapi_url,
     )
+
+    @app.exception_handler(VectorIndexMaintenanceError)
+    async def vector_index_maintenance_handler(_request, exc: VectorIndexMaintenanceError):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     # CORS: * = allow all (dev); comma-separated origins for production
     origins_raw = (settings.cors_origins or "*").strip()

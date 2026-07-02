@@ -90,7 +90,7 @@
 - Documents：`DocumentList.tsx`, `DocumentDetail.tsx`
 - Crawl：`Crawler.tsx` 保留为 WHMCS 直达页面；主导航默认隐藏，常规网页内容抓取从 Documents 的“抓取网站/添加文档”进入，并可选择 JavaScript 渲染抓取。JS 渲染抓取默认用于指定单页，不做动态整站爬取。
 - Dashboard：`Dashboard.tsx`
-- Settings：`Settings.tsx`，模型、向量、提示词和回答流程配置；回答流程默认显示“回答模式”，内部 RAG/LLM 细开关折叠在高级设置中。
+- Settings：`Settings.tsx`，模型、向量、提示词和回答流程配置；向量化页面显示 Qdrant 重建状态、进度和重试入口；回答流程默认显示“回答模式”，内部 RAG/LLM 细开关折叠在高级设置中。
 - Tickets：`TicketList.tsx`, `TicketDetail.tsx`
 - Intents：`IntentList.tsx`
 - Doc Types：`DocTypeList.tsx`
@@ -112,7 +112,8 @@
 
 注意：
 - LLM 使用 OpenAI-compatible 接口。
-- embedding 维度变化可能要求重建 Qdrant collection 或重新入库，必须先确认。
+- provider、模型、维度或 Base URL 变化后，系统把向量索引标记为 `required` 并暂停检索型问答；在 Settings 确认后由 Celery 仅重建 Qdrant。
+- 重建失败时先根据页面中的脱敏错误修正配置，再从头重试；不要手动混写旧 collection。
 - 优先通过 Settings UI 或 DB config，环境变量是 fallback。
 
 ## 做只读项目理解

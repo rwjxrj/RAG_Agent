@@ -246,6 +246,7 @@ class IngestionService:
         self._settings = get_settings()
         self._opensearch = opensearch or OpenSearchClient()
         self._qdrant = qdrant or QdrantSearchClient()
+        self._owns_embedder = embedder is None
         self._embedder = embedder or get_embedding_provider()
 
     async def ingest_document(
@@ -315,6 +316,12 @@ class IngestionService:
             await db_session.flush()
             await db_session.commit()
             return existing.id
+
+        if self._owns_embedder:
+            from app.services.vector_index_rebuild import refresh_embedding_runtime_if_ready
+
+            await refresh_embedding_runtime_if_ready()
+            self._embedder = get_embedding_provider()
 
         # Create or update document
         if existing:

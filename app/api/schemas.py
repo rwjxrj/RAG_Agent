@@ -299,6 +299,15 @@ class EmbeddingConfigUpdateRequest(BaseModel):
     embedding_base_url: str | None = None
 
 
+class VectorIndexStatusResponse(BaseModel):
+    status: Literal["ready", "required", "queued", "running", "failed"]
+    job_id: str | None = None
+    processed_chunks: int = 0
+    total_chunks: int = 0
+    error: str | None = None
+    updated_at: datetime | None = None
+
+
 class RerankerConfigResponse(BaseModel):
     """Reranker config - from DB with env fallback."""
 

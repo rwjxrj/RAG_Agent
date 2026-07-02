@@ -264,6 +264,15 @@ export interface EmbeddingConfigUpdate {
   embedding_base_url?: string
 }
 
+export interface VectorIndexStatus {
+  status: 'ready' | 'required' | 'queued' | 'running' | 'failed'
+  job_id: string | null
+  processed_chunks: number
+  total_chunks: number
+  error: string | null
+  updated_at: string | null
+}
+
 export interface RerankerConfig {
   reranker_provider: 'local' | 'cloud' | 'custom'
   reranker_model: string
@@ -394,6 +403,10 @@ export const admin = {
     http.get<EmbeddingConfig>(`/admin/config/embedding`).then((res) => res.data),
   updateEmbeddingConfig: (data: EmbeddingConfigUpdate) =>
     http.put<EmbeddingConfig>(`/admin/config/embedding`, data).then((res) => res.data),
+  getVectorIndexStatus: () =>
+    http.get<VectorIndexStatus>(`/admin/vector-index/status`).then((res) => res.data),
+  rebuildVectorIndex: () =>
+    http.post<VectorIndexStatus>(`/admin/vector-index/rebuild`).then((res) => res.data),
   getRerankerConfig: () =>
     http.get<RerankerConfig>(`/admin/config/reranker`).then((res) => res.data),
   updateRerankerConfig: (data: RerankerConfigUpdate) =>
