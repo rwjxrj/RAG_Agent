@@ -117,6 +117,7 @@ flowchart LR
 - 向量空间指纹由 provider、model、dimensions、规范化 Base URL 组成；只修改 API key 不要求重建。
 - `aliyun` provider 复用 OpenAI-compatible embeddings 接口，设置页默认填入 `text-embedding-v4`、1024 维和 `https://dashscope.aliyuncs.com/compatible-mode/v1`；请求显式传递 `dimensions`，健康检查校验实际返回维度。
 - 云端 embedding 请求关闭 SDK 隐式重试，由项目按配置执行有限重试：默认单次超时 60 秒、最多 3 次，对连接失败、超时、408/409/429/5xx 按 1 秒、2 秒退避；认证、权限、模型和参数错误立即失败，不切换备用模型。
+- 阿里云百炼 `text-embedding-v4` 单次最多接收 10 条输入；`aliyun` provider 对外声明批次上限，重建流程会将默认32条批次自动收缩到10条。
 - `queued` / `running` 状态默认超过 600 秒未更新会对外转为 `failed`，管理员可重新排队；worker 每完成一个批次都会刷新进度和更新时间。
 - 重建只读取 PostgreSQL `chunks` 并重写 Qdrant，不重新分块、不修改 PostgreSQL chunk，也不重建 OpenSearch。
 - 固定意图或无需 retrieval 的直接回答不受维护状态影响；进入 `RetrievalService.retrieve()` 时会检查状态。

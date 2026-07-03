@@ -342,8 +342,13 @@ async def rebuild_vector_index(
     qdrant.recreate_collection(dimensions)
     total = len(all_chunks)
     processed = 0
-    for offset in range(0, total, max(1, batch_size)):
-        batch = all_chunks[offset : offset + max(1, batch_size)]
+    effective_batch_size = max(1, batch_size)
+    batch_limit = getattr(embedder, "max_batch_size", None)
+    provider_batch_size = batch_limit() if callable(batch_limit) else None
+    if provider_batch_size is not None:
+        effective_batch_size = min(effective_batch_size, max(1, int(provider_batch_size)))
+    for offset in range(0, total, effective_batch_size):
+        batch = all_chunks[offset : offset + effective_batch_size]
         vectors = await embedder.embed([chunk.chunk_text for chunk in batch])
         if len(vectors) != len(batch):
             raise ValueError(

@@ -33,6 +33,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     def __init__(self) -> None:
         settings = get_settings()
+        self._provider_name = get_embedding_provider_name()
         api_key = get_embedding_api_key()
         base_url = get_embedding_base_url()
         kwargs: dict = {
@@ -55,7 +56,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             "model": get_embedding_model(),
             "input": texts,
         }
-        if get_embedding_provider_name() == "aliyun":
+        if self._provider_name == "aliyun":
             request["dimensions"] = get_embedding_dimensions()
 
         for attempt in range(1, self._retry_attempts + 1):
@@ -83,6 +84,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     def dimensions(self) -> int:
         return get_embedding_dimensions()
+
+    def max_batch_size(self) -> int | None:
+        return 10 if self._provider_name == "aliyun" else None
 
 
 class OllamaEmbeddingProvider(EmbeddingProvider):

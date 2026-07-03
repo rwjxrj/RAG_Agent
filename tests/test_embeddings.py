@@ -107,10 +107,19 @@ async def test_aliyun_embedding_provider_passes_configured_dimensions(monkeypatc
 
     assert vectors == [[0.1, 0.2, 0.3]]
     assert isinstance(provider, embeddings.OpenAIEmbeddingProvider)
+    assert provider.max_batch_size() == 10
     assert _FakeOpenAIClient.last_instance is not None
     assert _FakeOpenAIClient.last_instance.embeddings.calls == [
         {"model": "text-embedding-v4", "input": ["你好"], "dimensions": 1024}
     ]
+
+
+def test_non_aliyun_openai_provider_has_no_batch_limit(monkeypatch):
+    _configure_openai_provider(monkeypatch, "openai")
+
+    provider = embeddings.OpenAIEmbeddingProvider()
+
+    assert provider.max_batch_size() is None
 
 
 @pytest.mark.asyncio
