@@ -105,7 +105,8 @@
 - 现象：设置页持续显示向量索引等待执行，进度长期为 `0 / 0`，阿里云 embedding API 没有实际请求。
 - 影响：重建状态停留在 `queued`，知识库问答因向量索引维护状态持续暂停。
 - 根因：API容器已包含 `worker.tasks.rebuild_vector_index`，但Celery worker仍运行旧镜像；worker收到任务后报 `Received unregistered task` 并丢弃消息，API已提交的状态没有失败回写路径。
-- 修复：云端embedding增加明确的有限重试与超时；活动重建状态超过配置时间未更新时按僵尸任务返回 `failed` 并允许重新排队。
+- 补充故障：worker恢复后探测请求成功，但重建默认每批32条，阿里云接口限制最多10条并返回 `InvalidParameter: batch size ... should not be larger than 10`。
+- 修复：云端embedding增加明确的有限重试与超时；活动重建状态超过配置时间未更新时按僵尸任务返回 `failed` 并允许重新排队；阿里云provider声明10条批次上限，重建流程自动收缩批次。
 - 验证：worker任务注册表必须包含 `worker.tasks.rebuild_vector_index`；模拟旧状态超过10分钟后，状态接口返回 `failed` 且允许重新排队。
 - 相关文件：`app/search/embeddings.py`、`app/services/vector_index_rebuild.py`、`worker/tasks.py`
 - 运维要求：发布涉及 `worker/tasks.py` 或worker依赖代码的版本时，必须同步重新创建API和worker，并用 `celery inspect registered` 确认任务已注册。

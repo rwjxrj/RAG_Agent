@@ -43,6 +43,10 @@ class EmbeddingProvider(ABC):
         """Return embedding dimensions."""
         pass
 
+    def max_batch_size(self) -> int | None:
+        """Return the provider request limit, or None when no limit is required."""
+        return None
+
 
 class RerankerProvider(ABC):
     """Abstract reranker interface."""

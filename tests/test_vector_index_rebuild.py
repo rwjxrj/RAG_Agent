@@ -117,6 +117,35 @@ async def test_rebuild_vector_index_probes_before_recreating_and_reports_progres
 
 
 @pytest.mark.asyncio
+async def test_rebuild_vector_index_respects_provider_batch_limit():
+    class _LimitedEmbedder(_FakeEmbedder):
+        def max_batch_size(self) -> int:
+            return 10
+
+    embedder = _LimitedEmbedder()
+    chunks = [
+        SimpleNamespace(
+            id=f"chunk-{index}",
+            chunk_text=f"text-{index}",
+            document_id="doc-1",
+            chunk_metadata=None,
+            document=SimpleNamespace(source_url="https://example.com", doc_type="docs"),
+        )
+        for index in range(21)
+    ]
+
+    processed = await rebuild_vector_index(
+        chunks=chunks,
+        embedder=embedder,
+        qdrant=_FakeQdrant(),
+        batch_size=32,
+    )
+
+    assert processed == 21
+    assert [len(call) for call in embedder.calls] == [1, 10, 10, 1]
+
+
+@pytest.mark.asyncio
 async def test_rebuild_vector_index_does_not_delete_collection_when_probe_fails():
     embedder = _FakeEmbedder(fail=True)
     qdrant = _FakeQdrant()
