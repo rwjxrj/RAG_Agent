@@ -5,9 +5,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-from dataclasses import dataclass
-from datetime import datetime
-from datetime import timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable
 
 from sqlalchemy import select, text
@@ -128,7 +127,26 @@ async def _get_state_row(session: Any) -> AppConfig | None:
 
 async def get_vector_index_status(session: Any) -> VectorIndexStatus:
     row = await _get_state_row(session)
-    return VectorIndexStatus.from_json(row.value if row else None)
+    status = VectorIndexStatus.from_json(row.value if row else None)
+    if status.status not in ACTIVE_STATUSES or status.updated_at is None:
+        return status
+
+    from app.core.config import get_settings
+
+    stale_seconds = get_settings().vector_rebuild_stale_seconds
+    now = datetime.now(timezone.utc)
+    updated_at = status.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    if now - updated_at <= timedelta(seconds=stale_seconds):
+        return status
+
+    stale_minutes = max(1, stale_seconds // 60)
+    return replace(
+        status,
+        status="failed",
+        error=f"向量索引重建任务超过 {stale_minutes} 分钟未更新，已停止等待。",
+    )
 
 
 async def save_vector_index_status(

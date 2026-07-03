@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -256,10 +257,44 @@ async def test_vector_index_guard_rejects_required_state():
 
 @pytest.mark.asyncio
 async def test_queue_vector_index_rebuild_rejects_duplicate_active_job():
-    row = SimpleNamespace(value=VectorIndexStatus(status="running", job_id="job-1").to_json())
+    row = SimpleNamespace(value=VectorIndexStatus(
+        status="running",
+        job_id="job-1",
+        updated_at=datetime.now(timezone.utc),
+    ).to_json())
 
     with pytest.raises(VectorIndexConflictError):
         await queue_vector_index_rebuild(_FakeStateSession(row), "job-2", lock=False)
+
+
+@pytest.mark.asyncio
+async def test_stale_queued_job_is_exposed_as_failed():
+    stale = VectorIndexStatus(
+        status="queued",
+        job_id="stale-job",
+        updated_at=datetime.now(timezone.utc) - timedelta(minutes=11),
+    )
+
+    status = await get_vector_index_status(_FakeStateSession(SimpleNamespace(value=stale.to_json())))
+
+    assert status.status == "failed"
+    assert status.job_id == "stale-job"
+    assert status.error == "向量索引重建任务超过 10 分钟未更新，已停止等待。"
+
+
+@pytest.mark.asyncio
+async def test_stale_active_job_can_be_requeued():
+    stale = VectorIndexStatus(
+        status="running",
+        job_id="stale-job",
+        updated_at=datetime.now(timezone.utc) - timedelta(minutes=11),
+    )
+    session = _FakeStateSession(SimpleNamespace(value=stale.to_json()))
+
+    status = await queue_vector_index_rebuild(session, "new-job", lock=False)
+
+    assert status.status == "queued"
+    assert status.job_id == "new-job"
 
 
 @pytest.mark.asyncio

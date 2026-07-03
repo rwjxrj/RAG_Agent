@@ -99,3 +99,14 @@
 - 验证：调用链回归测试在修复前产生英文指令，修复后产生中文指令；全量 `pytest tests/ -q` 为 573 passed。
 - 相关文件：`app/services/phases/generate.py`、`app/services/answer_utils.py`、`tests/test_generate_phase.py`、`tests/test_answer_decision_hardening.py`
 - 后续注意：内部检索查询语言与用户输出语言必须分离；调用链测试应同时设置中文原问题和英文 effective query。
+
+## 2026-07-03 - 新API已部署但旧worker未注册向量重建任务
+
+- 现象：设置页持续显示向量索引等待执行，进度长期为 `0 / 0`，阿里云 embedding API 没有实际请求。
+- 影响：重建状态停留在 `queued`，知识库问答因向量索引维护状态持续暂停。
+- 根因：API容器已包含 `worker.tasks.rebuild_vector_index`，但Celery worker仍运行旧镜像；worker收到任务后报 `Received unregistered task` 并丢弃消息，API已提交的状态没有失败回写路径。
+- 修复：云端embedding增加明确的有限重试与超时；活动重建状态超过配置时间未更新时按僵尸任务返回 `failed` 并允许重新排队。
+- 验证：worker任务注册表必须包含 `worker.tasks.rebuild_vector_index`；模拟旧状态超过10分钟后，状态接口返回 `failed` 且允许重新排队。
+- 相关文件：`app/search/embeddings.py`、`app/services/vector_index_rebuild.py`、`worker/tasks.py`
+- 运维要求：发布涉及 `worker/tasks.py` 或worker依赖代码的版本时，必须同步重新创建API和worker，并用 `celery inspect registered` 确认任务已注册。
+- 禁止方案：不能回退到不同embedding模型继续同一次重建，否则会形成不一致的向量空间。
