@@ -93,21 +93,28 @@ async def _check_llm_primary() -> str:
 
 async def _check_llm_fallback() -> str:
     """Check fallback LLM model connectivity."""
-    from app.services.llm_config import get_llm_api_key, get_llm_base_url
-    from app.core.config import get_settings
+    from app.services.llm_config import (
+        get_llm_api_key,
+        get_llm_base_url,
+        get_llm_fallback_api_key,
+        get_llm_fallback_base_url,
+        get_llm_fallback_model,
+    )
     from openai import AsyncOpenAI
 
-    settings = get_settings()
-    model = settings.llm_fallback_model
-    api_key = get_llm_api_key()
-    base_url = get_llm_base_url()
+    model = get_llm_fallback_model()
+    fallback_api_key = get_llm_fallback_api_key().strip()
+    fallback_base_url = get_llm_fallback_base_url().strip()
+    has_dedicated_fallback = bool(fallback_api_key and fallback_base_url)
+    api_key = fallback_api_key if has_dedicated_fallback else get_llm_api_key()
+    base_url = fallback_base_url if has_dedicated_fallback else get_llm_base_url()
     client = AsyncOpenAI(api_key=api_key, base_url=base_url)
     resp = await client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": "hi"}],
         max_tokens=1,
     )
-    return model
+    return f"{model} via {'fallback' if has_dedicated_fallback else 'primary'}"
 
 
 async def _check_llm_economy() -> str:
