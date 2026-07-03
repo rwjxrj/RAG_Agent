@@ -1,6 +1,7 @@
 import pytest
 
 from app.services import embedding_config, health_check
+from app.services import llm_config
 
 
 class _FakeEmbeddingItem:
@@ -30,6 +31,30 @@ class _FakeOpenAI:
     def __init__(self, **kwargs) -> None:
         type(self).last_instance = self
         self.embeddings = _FakeEmbeddings(type(self).response_dimensions)
+
+
+class _FakeChatCompletions:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return object()
+
+
+class _FakeChat:
+    def __init__(self) -> None:
+        self.completions = _FakeChatCompletions()
+
+
+class _FakeLLMOpenAI:
+    created_kwargs: dict | None = None
+    last_instance: "_FakeLLMOpenAI | None" = None
+
+    def __init__(self, **kwargs) -> None:
+        type(self).created_kwargs = kwargs
+        type(self).last_instance = self
+        self.chat = _FakeChat()
 
 
 def _configure_aliyun(monkeypatch, dimensions: int = 1024) -> None:
@@ -77,3 +102,41 @@ async def test_embedding_dimension_mismatch_is_visible_in_health_result(monkeypa
 
     assert result["status"] == "error"
     assert result["detail"] == "向量维度不一致：期望 1024，实际 768"
+
+
+@pytest.mark.asyncio
+async def test_fallback_health_check_uses_runtime_fallback_config(monkeypatch):
+    monkeypatch.setattr(llm_config, "get_llm_fallback_model", lambda: "deepseek-v4-flash")
+    monkeypatch.setattr(llm_config, "get_llm_fallback_api_key", lambda: "fallback-key")
+    monkeypatch.setattr(llm_config, "get_llm_fallback_base_url", lambda: "https://api.deepseek.com")
+    monkeypatch.setattr(llm_config, "get_llm_api_key", lambda: "primary-key")
+    monkeypatch.setattr(llm_config, "get_llm_base_url", lambda: "https://primary.example.com/v1")
+    monkeypatch.setattr("openai.AsyncOpenAI", _FakeLLMOpenAI)
+
+    result = await health_check._check_llm_fallback()
+
+    assert result == "deepseek-v4-flash via fallback"
+    assert _FakeLLMOpenAI.created_kwargs == {
+        "api_key": "fallback-key",
+        "base_url": "https://api.deepseek.com",
+    }
+    assert _FakeLLMOpenAI.last_instance is not None
+    assert _FakeLLMOpenAI.last_instance.chat.completions.calls[0]["model"] == "deepseek-v4-flash"
+
+
+@pytest.mark.asyncio
+async def test_fallback_health_check_falls_back_to_primary_credentials(monkeypatch):
+    monkeypatch.setattr(llm_config, "get_llm_fallback_model", lambda: "backup-model")
+    monkeypatch.setattr(llm_config, "get_llm_fallback_api_key", lambda: "")
+    monkeypatch.setattr(llm_config, "get_llm_fallback_base_url", lambda: "")
+    monkeypatch.setattr(llm_config, "get_llm_api_key", lambda: "primary-key")
+    monkeypatch.setattr(llm_config, "get_llm_base_url", lambda: "https://primary.example.com/v1")
+    monkeypatch.setattr("openai.AsyncOpenAI", _FakeLLMOpenAI)
+
+    result = await health_check._check_llm_fallback()
+
+    assert result == "backup-model via primary"
+    assert _FakeLLMOpenAI.created_kwargs == {
+        "api_key": "primary-key",
+        "base_url": "https://primary.example.com/v1",
+    }

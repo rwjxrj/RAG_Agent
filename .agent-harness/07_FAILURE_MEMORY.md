@@ -111,3 +111,13 @@
 - 相关文件：`app/search/embeddings.py`、`app/services/vector_index_rebuild.py`、`worker/tasks.py`
 - 运维要求：发布涉及 `worker/tasks.py` 或worker依赖代码的版本时，必须同步重新创建API和worker，并用 `celery inspect registered` 确认任务已注册。
 - 禁止方案：不能回退到不同embedding模型继续同一次重建，否则会形成不一致的向量空间。
+
+## 2026-07-03 - 备用模型健康检查误用主模型配置
+
+- 现象：设置页显示备用模型 `deepseek-v4-flash`，健康检查却显示 `mimo-v2.5` 且状态正常。
+- 影响：备用供应商没有被真实检查，健康状态产生误报。
+- 根因：`_check_llm_fallback()` 直接读取环境变量中的备用模型，并使用主模型API Key和Base URL，绕过了数据库运行时配置缓存。
+- 修复：统一读取 `llm_config` 的备用模型、备用Key和备用Base URL；只有备用Key与地址同时存在时使用独立客户端，否则安全回退主凭证和主地址。
+- 验证：回归测试分别覆盖独立备用供应商和空备用凭证回退主供应商。
+- 相关文件：`app/services/health_check.py`、`tests/test_health_check.py`
+- 后续注意：健康检查必须复用业务调用链的配置解析规则，不能直接读取环境变量绕过运行时缓存。
