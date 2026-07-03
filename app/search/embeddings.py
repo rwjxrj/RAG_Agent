@@ -1,8 +1,11 @@
 """Embedding providers: OpenAI-compatible or Ollama."""
 
-import httpx
-from openai import AsyncOpenAI
+import asyncio
 
+import httpx
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI
+
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.search.base import EmbeddingProvider
 from app.services.embedding_config import (
@@ -16,34 +19,67 @@ from app.services.embedding_config import (
 logger = get_logger(__name__)
 
 
+def _is_retryable_embedding_error(error: Exception) -> bool:
+    if isinstance(error, (APIConnectionError, APITimeoutError)):
+        return True
+    status_code = getattr(error, "status_code", None)
+    return status_code in {408, 409, 429} or (
+        isinstance(status_code, int) and status_code >= 500
+    )
+
+
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     """OpenAI-compatible embeddings."""
 
     def __init__(self) -> None:
+        settings = get_settings()
         api_key = get_embedding_api_key()
         base_url = get_embedding_base_url()
-        kwargs: dict = {"api_key": api_key}
+        kwargs: dict = {
+            "api_key": api_key,
+            "max_retries": 0,
+            "timeout": settings.embedding_request_timeout_seconds,
+        }
         if base_url and base_url.strip():
             kwargs["base_url"] = base_url.strip().rstrip("/")
         self._client = AsyncOpenAI(**kwargs)
+        self._retry_attempts = settings.embedding_retry_attempts
+        self._retry_backoff_seconds = settings.embedding_retry_backoff_seconds
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts using OpenAI."""
         if not texts:
             return []
 
-        try:
-            request: dict = {
-                "model": get_embedding_model(),
-                "input": texts,
-            }
-            if get_embedding_provider_name() == "aliyun":
-                request["dimensions"] = get_embedding_dimensions()
-            response = await self._client.embeddings.create(**request)
-            return [d.embedding for d in response.data]
-        except Exception as e:
-            logger.error("embedding_failed", error=str(e))
-            raise
+        request: dict = {
+            "model": get_embedding_model(),
+            "input": texts,
+        }
+        if get_embedding_provider_name() == "aliyun":
+            request["dimensions"] = get_embedding_dimensions()
+
+        for attempt in range(1, self._retry_attempts + 1):
+            try:
+                response = await self._client.embeddings.create(**request)
+                return [d.embedding for d in response.data]
+            except Exception as error:
+                if attempt >= self._retry_attempts or not _is_retryable_embedding_error(error):
+                    logger.error(
+                        "embedding_failed",
+                        error=str(error),
+                        attempts=attempt,
+                    )
+                    raise
+                delay = self._retry_backoff_seconds * (2 ** (attempt - 1))
+                logger.warning(
+                    "embedding_retry_scheduled",
+                    error=error.__class__.__name__,
+                    attempt=attempt,
+                    delay_seconds=delay,
+                )
+                await asyncio.sleep(delay)
+
+        raise RuntimeError("Embedding retry loop exited unexpectedly")
 
     def dimensions(self) -> int:
         return get_embedding_dimensions()

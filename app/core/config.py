@@ -80,6 +80,10 @@ class Settings(BaseSettings):
         default="",
         description="Embedding API base URL; empty falls back to LLM/OpenAI base URL or Ollama default",
     )
+    embedding_request_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    embedding_retry_attempts: int = Field(default=3, ge=1, le=10)
+    embedding_retry_backoff_seconds: float = Field(default=1.0, ge=0, le=60)
+    vector_rebuild_stale_seconds: int = Field(default=600, ge=60, le=86400)
     openai_api_key: str = Field(default="", description="OpenAI API key")
     openai_base_url: str = Field(default="", description="OpenAI-compatible API base URL (empty = default)")
 
